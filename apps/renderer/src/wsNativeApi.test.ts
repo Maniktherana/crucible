@@ -6,6 +6,7 @@ class MockWebSocket {
   static OPEN = 1;
   static instances: MockWebSocket[] = [];
   static failSend = false;
+  static failOpen = false;
 
   readyState = 0;
   binaryType = "blob";
@@ -15,6 +16,10 @@ class MockWebSocket {
   constructor(readonly url: string) {
     MockWebSocket.instances.push(this);
     queueMicrotask(() => {
+      if (MockWebSocket.failOpen) {
+        this.emit("error", { message: "mock open failure" });
+        return;
+      }
       this.readyState = MockWebSocket.OPEN;
       this.emit("open", {});
     });
@@ -82,6 +87,7 @@ describe("wsNativeApi", () => {
     vi.resetModules();
     MockWebSocket.instances = [];
     MockWebSocket.failSend = false;
+    MockWebSocket.failOpen = false;
     vi.stubGlobal("WebSocket", MockWebSocket as unknown as typeof WebSocket);
   });
 
@@ -206,5 +212,14 @@ describe("wsNativeApi", () => {
     const second = getOrCreateWsNativeApi();
 
     expect(second).toBe(first);
+  });
+
+  it("rejects requests when websocket connection fails", async () => {
+    setWindowSearch("?ws=ws%3A%2F%2F127.0.0.1%3A4405");
+    MockWebSocket.failOpen = true;
+    const { getOrCreateWsNativeApi } = await import("./wsNativeApi");
+    const api = getOrCreateWsNativeApi();
+
+    await expect(api.todos.list()).rejects.toThrow("Failed to connect to local t3 runtime.");
   });
 });
