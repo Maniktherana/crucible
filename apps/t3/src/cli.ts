@@ -7,6 +7,9 @@ import { fileURLToPath } from "node:url";
 
 import { startRuntimeApiServer } from "./runtimeApiServer";
 
+const DEFAULT_BACKEND_PORT = 4317;
+const DEFAULT_WEB_PORT = 4318;
+
 function parsePort(value: string | undefined, fallback: number): number {
   if (!value) {
     return fallback;
@@ -20,8 +23,119 @@ function parsePort(value: string | undefined, fallback: number): number {
   return parsed;
 }
 
-function openBrowser(url: string): void {
-  if (process.env.T3_NO_OPEN === "1") {
+interface CliOptions {
+  backendPort: number;
+  webPort: number;
+  launchCwd: string;
+  noOpen: boolean;
+  showHelp: boolean;
+}
+
+function readArgValue(args: string[], index: number, key: string): string {
+  const value = args[index + 1];
+  if (!value || value.startsWith("-")) {
+    throw new Error(`Missing value for ${key}.`);
+  }
+
+  return value;
+}
+
+export function parseCliOptions(
+  argv: string[],
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+): CliOptions {
+  let backendPort = parsePort(env.T3_BACKEND_PORT, DEFAULT_BACKEND_PORT);
+  let webPort = parsePort(env.T3_WEB_PORT, DEFAULT_WEB_PORT);
+  let launchCwd = cwd;
+  let noOpen = env.T3_NO_OPEN === "1";
+  let showHelp = false;
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (!arg) continue;
+
+    if (arg === "--help" || arg === "-h") {
+      showHelp = true;
+      continue;
+    }
+
+    if (arg === "--no-open") {
+      noOpen = true;
+      continue;
+    }
+
+    if (arg.startsWith("--backend-port=")) {
+      backendPort = parsePort(arg.split("=")[1], DEFAULT_BACKEND_PORT);
+      continue;
+    }
+
+    if (arg === "--backend-port") {
+      backendPort = parsePort(
+        readArgValue(argv, index, "--backend-port"),
+        DEFAULT_BACKEND_PORT,
+      );
+      index += 1;
+      continue;
+    }
+
+    if (arg.startsWith("--web-port=")) {
+      webPort = parsePort(arg.split("=")[1], DEFAULT_WEB_PORT);
+      continue;
+    }
+
+    if (arg === "--web-port") {
+      webPort = parsePort(readArgValue(argv, index, "--web-port"), DEFAULT_WEB_PORT);
+      index += 1;
+      continue;
+    }
+
+    if (arg.startsWith("--cwd=")) {
+      launchCwd = path.resolve(arg.split("=")[1] ?? cwd);
+      continue;
+    }
+
+    if (arg === "--cwd") {
+      launchCwd = path.resolve(readArgValue(argv, index, "--cwd"));
+      index += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown argument: ${arg}`);
+  }
+
+  return {
+    backendPort,
+    webPort,
+    launchCwd,
+    noOpen,
+    showHelp,
+  };
+}
+
+function printHelp(): void {
+  process.stdout.write(
+    [
+      "Usage: t3 [options]",
+      "",
+      "Options:",
+      "  --no-open               Start runtime without opening browser",
+      "  --backend-port <port>   Override WebSocket API port (default: 4317)",
+      "  --web-port <port>       Override web UI port (default: 4318)",
+      "  --cwd <path>            Launch project directory (default: current directory)",
+      "  -h, --help              Show this help message",
+      "",
+      "Environment variables:",
+      "  T3_NO_OPEN=1            Disable browser auto-open",
+      "  T3_BACKEND_PORT=<port>  Default backend port",
+      "  T3_WEB_PORT=<port>      Default web UI port",
+      "",
+    ].join("\n"),
+  );
+}
+
+function openBrowser(url: string, noOpen: boolean): void {
+  if (noOpen) {
     return;
   }
 
@@ -117,23 +231,35 @@ function startStaticWebServer(distRoot: string, port: number) {
 }
 
 async function main() {
-  const backendPort = parsePort(process.env.T3_BACKEND_PORT, 4317);
-  const webPort = parsePort(process.env.T3_WEB_PORT, 4318);
-  const launchCwd = process.cwd();
+  let options: CliOptions;
+  try {
+    options = parseCliOptions(process.argv.slice(2), process.env, process.cwd());
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : "Invalid arguments."}\n\n`);
+    printHelp();
+    process.exit(1);
+    return;
+  }
+
+  if (options.showHelp) {
+    printHelp();
+    process.exit(0);
+    return;
+  }
 
   const runtimeServer = await startRuntimeApiServer({
-    port: backendPort,
-    launchCwd,
+    port: options.backendPort,
+    launchCwd: options.launchCwd,
   });
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const rendererRoot = path.resolve(__dirname, "../../renderer");
   ensureRendererBuild(rendererRoot);
-  const staticServer = await startStaticWebServer(path.join(rendererRoot, "dist"), webPort);
+  const staticServer = await startStaticWebServer(path.join(rendererRoot, "dist"), options.webPort);
 
   const wsParam = encodeURIComponent(runtimeServer.wsUrl);
-  const appUrl = `http://127.0.0.1:${webPort}?ws=${wsParam}`;
-  openBrowser(appUrl);
+  const appUrl = `http://127.0.0.1:${options.webPort}?ws=${wsParam}`;
+  openBrowser(appUrl, options.noOpen);
 
   process.stdout.write(`CodeThing is running at ${appUrl}\n`);
 
@@ -150,4 +276,8 @@ async function main() {
   });
 }
 
-void main();
+const entrypoint = process.argv[1];
+const currentFilePath = fileURLToPath(import.meta.url);
+if (entrypoint && path.resolve(entrypoint) === currentFilePath) {
+  void main();
+}
