@@ -125,4 +125,29 @@ describe("wsNativeApi", () => {
       "Failed to send runtime request 'todos.list': mock send failure",
     );
   });
+
+  it("falls back to default local runtime URL when ws query is missing", async () => {
+    setWindowSearch("");
+    const { getOrCreateWsNativeApi } = await import("./wsNativeApi");
+    const api = getOrCreateWsNativeApi();
+
+    const request = api.todos.list();
+    const socket = MockWebSocket.instances[0];
+    await waitForCondition(() => (socket?.sentMessages.length ?? 0) > 0);
+    expect(socket?.url).toBe("ws://127.0.0.1:4317");
+
+    const requestEnvelope = JSON.parse(socket?.sentMessages[0] ?? "{}") as {
+      id: string;
+    };
+    socket?.emitMessage(
+      JSON.stringify({
+        type: "response",
+        id: requestEnvelope.id,
+        ok: true,
+        result: [],
+      }),
+    );
+
+    await expect(request).resolves.toEqual([]);
+  });
 });
