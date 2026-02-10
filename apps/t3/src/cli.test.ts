@@ -969,6 +969,10 @@ describe("ifNoneMatchSatisfied", () => {
     expect(ifNoneMatchSatisfied("   ", "\"abc\"")).toBe(false);
   });
 
+  it("supports wildcard in array-valued headers", () => {
+    expect(ifNoneMatchSatisfied(["\"foo\"", "*"], "\"abc\"")).toBe(true);
+  });
+
   it("matches wildcard headers", () => {
     expect(ifNoneMatchSatisfied("*", "\"abc\"")).toBe(true);
   });
@@ -995,6 +999,10 @@ describe("ifNoneMatchSatisfied", () => {
 describe("ifMatchSatisfied", () => {
   it("defaults to true when header is missing", () => {
     expect(ifMatchSatisfied(undefined, "\"abc\"")).toBe(true);
+  });
+
+  it("treats empty header values as non-restrictive", () => {
+    expect(ifMatchSatisfied("   ", "\"abc\"")).toBe(true);
   });
 
   it("supports wildcard and exact strong matches", () => {
