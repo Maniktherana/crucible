@@ -473,6 +473,12 @@ describe("parseCliOptions", () => {
     );
   });
 
+  it("treats --open after --cwd as missing value", () => {
+    expect(() => parseCliOptions(["--cwd", "--open"], {}, "/workspace")).toThrow(
+      "Missing value for --cwd",
+    );
+  });
+
   it("treats end-of-options marker after --cwd as missing value", () => {
     expect(() => parseCliOptions(["--cwd", "--"], {}, "/workspace")).toThrow(
       "Missing value for --cwd",
