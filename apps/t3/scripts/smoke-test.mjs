@@ -235,6 +235,14 @@ async function main() {
         `Smoke test failed: expected HEAD asset status 200, received ${headAssetResponse.status}.`,
       );
     }
+    const headAssetContentLength = Number(headAssetResponse.headers.get("content-length") ?? "0");
+    if (!Number.isFinite(headAssetContentLength) || headAssetContentLength <= 0) {
+      throw new Error(
+        `Smoke test failed: expected positive content-length on HEAD asset response, got ${String(
+          headAssetResponse.headers.get("content-length"),
+        )}.`,
+      );
+    }
     const headAssetCacheControl = (headAssetResponse.headers.get("cache-control") ?? "").toLowerCase();
     if (!headAssetCacheControl.includes("immutable")) {
       throw new Error(
