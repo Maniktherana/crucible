@@ -70,52 +70,76 @@ function mb(bytes) {
   return bytes / (1024 * 1024);
 }
 
-function resolveNonNegativeNumberEnv({ name, value, fallback }) {
+function parseNumericEnv({ name, value, predicate, expectation }) {
   if (typeof value !== "string") {
-    return fallback;
+    return null;
   }
-  const parsed = Number(value);
-  if (Number.isFinite(parsed) && parsed >= 0) {
-    return parsed;
+  const raw = value.trim();
+  if (raw.length === 0) {
+    console.warn(
+      `[desktop-perf] invalid ${name}="${value}" (expected ${expectation}); using default`,
+    );
+    return null;
+  }
+  const parsed = Number(raw);
+  if (Number.isFinite(parsed) && predicate(parsed)) {
+    return {
+      parsed,
+      raw,
+    };
   }
   console.warn(
-    `[desktop-perf] invalid ${name}="${value}" (expected non-negative number); using ${fallback}`,
+    `[desktop-perf] invalid ${name}="${value}" (expected ${expectation}); using default`,
   );
-  return fallback;
+  return null;
+}
+
+function resolveNonNegativeNumberEnv({ name, value, fallback }) {
+  const resolved = parseNumericEnv({
+    name,
+    value,
+    predicate: (parsed) => parsed >= 0,
+    expectation: "non-negative number",
+  });
+  return resolved?.parsed ?? fallback;
 }
 
 function resolveNonNegativeIntegerEnv({ name, value, fallback }) {
-  const parsed = resolveNonNegativeNumberEnv({ name, value, fallback });
-  if (parsed === fallback) {
+  const resolved = parseNumericEnv({
+    name,
+    value,
+    predicate: (parsed) => parsed >= 0,
+    expectation: "non-negative number",
+  });
+  if (!resolved) {
     return fallback;
   }
-  const normalized = Math.trunc(parsed);
-  if (normalized !== parsed) {
+  const normalized = Math.trunc(resolved.parsed);
+  if (normalized !== resolved.parsed) {
     console.warn(
-      `[desktop-perf] non-integer ${name}="${value}" truncated to ${normalized} for consistency`,
+      `[desktop-perf] non-integer ${name}="${resolved.raw}" truncated to ${normalized} for consistency`,
     );
   }
   return normalized;
 }
 
 function resolvePositiveIntegerEnv({ name, value, fallback }) {
-  if (typeof value !== "string") {
+  const resolved = parseNumericEnv({
+    name,
+    value,
+    predicate: (parsed) => parsed > 0,
+    expectation: "positive number",
+  });
+  if (!resolved) {
     return fallback;
   }
-  const parsed = Number(value);
-  if (Number.isFinite(parsed) && parsed > 0) {
-    const normalized = Math.trunc(parsed);
-    if (normalized !== parsed) {
-      console.warn(
-        `[desktop-perf] non-integer ${name}="${value}" truncated to ${normalized} for consistency`,
-      );
-    }
-    return normalized;
+  const normalized = Math.trunc(resolved.parsed);
+  if (normalized !== resolved.parsed) {
+    console.warn(
+      `[desktop-perf] non-integer ${name}="${resolved.raw}" truncated to ${normalized} for consistency`,
+    );
   }
-  console.warn(
-    `[desktop-perf] invalid ${name}="${value}" (expected positive number); using ${fallback}`,
-  );
-  return fallback;
+  return normalized;
 }
 
 function summarizeTrace(tracePath) {
