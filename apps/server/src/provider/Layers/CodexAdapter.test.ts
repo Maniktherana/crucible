@@ -812,6 +812,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         provider: "codex",
         threadId: asThreadId("thread-1"),
         turnId: asTurnId("turn-parent"),
+        itemId: asItemId("call-collab-1"),
         createdAt: new Date().toISOString(),
         method: "codex/event/task_started",
         payload: {
@@ -835,7 +836,9 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         return;
       }
       assert.equal(firstEvent.value.turnId, "turn-parent");
+      assert.equal(firstEvent.value.itemId, "call-collab-1");
       assert.equal(firstEvent.value.providerRefs?.providerTurnId, "turn-parent");
+      assert.equal(firstEvent.value.providerRefs?.providerItemId, "call-collab-1");
       assert.equal(firstEvent.value.payload.taskId, "turn-child");
     }),
   );

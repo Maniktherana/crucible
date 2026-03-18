@@ -71,6 +71,7 @@ interface CodexSessionContext {
   pendingApprovals: Map<ApprovalRequestId, PendingApprovalRequest>;
   pendingUserInputs: Map<ApprovalRequestId, PendingUserInputRequest>;
   collabReceiverTurns: Map<string, TurnId>;
+  collabReceiverItems: Map<string, ProviderItemId>;
   nextRequestId: number;
   stopping: boolean;
 }
@@ -573,6 +574,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         pendingApprovals: new Map(),
         pendingUserInputs: new Map(),
         collabReceiverTurns: new Map(),
+        collabReceiverItems: new Map(),
         nextRequestId: 1,
         stopping: false,
       };
@@ -735,6 +737,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   async sendTurn(input: CodexAppServerSendTurnInput): Promise<ProviderTurnStartResult> {
     const context = this.requireSession(input.threadId);
     context.collabReceiverTurns.clear();
+    context.collabReceiverItems.clear();
 
     const turnInput: Array<
       { type: "text"; text: string; text_elements: [] } | { type: "image"; url: string }
@@ -1127,7 +1130,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const rawRoute = this.readRouteFields(notification.params);
     this.rememberCollabReceiverTurns(context, notification.params, rawRoute.turnId);
     const childParentTurnId = this.readChildParentTurnId(context, notification.params);
+    const childParentItemId = this.readChildParentItemId(context, notification.params);
     const isChildConversation = childParentTurnId !== undefined;
+    const effectiveItemId = rawRoute.itemId ?? childParentItemId;
     if (
       isChildConversation &&
       this.shouldSuppressChildConversationNotification(notification.method)
@@ -1149,7 +1154,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       ...((childParentTurnId ?? rawRoute.turnId)
         ? { turnId: childParentTurnId ?? rawRoute.turnId }
         : {}),
-      ...(rawRoute.itemId ? { itemId: rawRoute.itemId } : {}),
+      ...(effectiveItemId ? { itemId: effectiveItemId } : {}),
       textDelta,
       payload: notification.params,
     });
@@ -1181,6 +1186,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         return;
       }
       context.collabReceiverTurns.clear();
+      context.collabReceiverItems.clear();
       const turn = this.readObject(notification.params, "turn");
       const status = this.readString(turn, "status");
       const errorMessage = this.readString(this.readObject(turn, "error"), "message");
@@ -1209,7 +1215,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   private handleServerRequest(context: CodexSessionContext, request: JsonRpcRequest): void {
     const rawRoute = this.readRouteFields(request.params);
     const childParentTurnId = this.readChildParentTurnId(context, request.params);
+    const childParentItemId = this.readChildParentItemId(context, request.params);
     const effectiveTurnId = childParentTurnId ?? rawRoute.turnId;
+    const effectiveItemId = rawRoute.itemId ?? childParentItemId;
     const requestKind = this.requestKindForMethod(request.method);
     let requestId: ApprovalRequestId | undefined;
     if (requestKind) {
@@ -1226,7 +1234,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         requestKind,
         threadId: context.session.threadId,
         ...(effectiveTurnId ? { turnId: effectiveTurnId } : {}),
-        ...(rawRoute.itemId ? { itemId: rawRoute.itemId } : {}),
+        ...(effectiveItemId ? { itemId: effectiveItemId } : {}),
       };
       context.pendingApprovals.set(requestId, pendingRequest);
     }
@@ -1238,7 +1246,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         jsonRpcId: request.id,
         threadId: context.session.threadId,
         ...(effectiveTurnId ? { turnId: effectiveTurnId } : {}),
-        ...(rawRoute.itemId ? { itemId: rawRoute.itemId } : {}),
+        ...(effectiveItemId ? { itemId: effectiveItemId } : {}),
       });
     }
 
@@ -1250,7 +1258,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       createdAt: new Date().toISOString(),
       method: request.method,
       ...(effectiveTurnId ? { turnId: effectiveTurnId } : {}),
-      ...(rawRoute.itemId ? { itemId: rawRoute.itemId } : {}),
+      ...(effectiveItemId ? { itemId: effectiveItemId } : {}),
       requestId,
       requestKind,
       payload: request.params,
@@ -1493,6 +1501,17 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     return context.collabReceiverTurns.get(providerConversationId);
   }
 
+  private readChildParentItemId(
+    context: CodexSessionContext,
+    params: unknown,
+  ): ProviderItemId | undefined {
+    const providerConversationId = this.readProviderConversationId(params);
+    if (!providerConversationId) {
+      return undefined;
+    }
+    return context.collabReceiverItems.get(providerConversationId);
+  }
+
   private rememberCollabReceiverTurns(
     context: CodexSessionContext,
     params: unknown,
@@ -1507,6 +1526,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     if (itemType !== "collabAgentToolCall") {
       return;
     }
+    const parentItemId = toProviderItemId(this.readString(item, "id"));
 
     const receiverThreadIds =
       this.readArray(item, "receiverThreadIds")
@@ -1514,6 +1534,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         .filter((value): value is string => value !== null) ?? [];
     for (const receiverThreadId of receiverThreadIds) {
       context.collabReceiverTurns.set(receiverThreadId, parentTurnId);
+      if (parentItemId) {
+        context.collabReceiverItems.set(receiverThreadId, parentItemId);
+      }
     }
   }
 

@@ -89,6 +89,7 @@ interface ClaudeTurnState {
   readonly assistantTextBlocks: Map<number, AssistantTextBlockState>;
   readonly assistantTextBlockOrder: Array<number>;
   readonly capturedProposedPlanKeys: Set<string>;
+  readonly taskItemIds: Map<string, string>;
   nextSyntheticAssistantBlockIndex: number;
 }
 
@@ -432,6 +433,20 @@ function nativeProviderRefs(
     };
   }
   return {};
+}
+
+function taskEventParentItemFields(
+  context: ClaudeSessionContext,
+  taskId: string,
+): Pick<ProviderRuntimeEvent, "itemId" | "providerRefs"> | undefined {
+  const providerItemId = context.turnState?.taskItemIds.get(taskId);
+  if (!providerItemId) {
+    return undefined;
+  }
+  return {
+    itemId: asRuntimeItemId(providerItemId),
+    providerRefs: nativeProviderRefs(context, { providerItemId }),
+  };
 }
 
 function extractAssistantTextBlocks(message: SDKMessage): Array<string> {
@@ -1599,6 +1614,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             assistantTextBlocks: new Map(),
             assistantTextBlockOrder: [],
             capturedProposedPlanKeys: new Set(),
+            taskItemIds: new Map(),
             nextSyntheticAssistantBlockIndex: -1,
           };
           context.session = {
@@ -1781,6 +1797,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           case "task_started":
             yield* offerRuntimeEvent({
               ...base,
+              ...taskEventParentItemFields(context, message.task_id),
               type: "task.started",
               payload: {
                 taskId: RuntimeTaskId.makeUnsafe(message.task_id),
@@ -1792,6 +1809,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           case "task_progress":
             yield* offerRuntimeEvent({
               ...base,
+              ...taskEventParentItemFields(context, message.task_id),
               type: "task.progress",
               payload: {
                 taskId: RuntimeTaskId.makeUnsafe(message.task_id),
@@ -1805,6 +1823,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           case "task_notification":
             yield* offerRuntimeEvent({
               ...base,
+              ...taskEventParentItemFields(context, message.task_id),
               type: "task.completed",
               payload: {
                 taskId: RuntimeTaskId.makeUnsafe(message.task_id),
@@ -1868,8 +1887,13 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         };
 
         if (message.type === "tool_progress") {
+          if (message.task_id && context.turnState) {
+            context.turnState.taskItemIds.set(message.task_id, message.tool_use_id);
+          }
           yield* offerRuntimeEvent({
             ...base,
+            itemId: asRuntimeItemId(message.tool_use_id),
+            providerRefs: nativeProviderRefs(context, { providerItemId: message.tool_use_id }),
             type: "tool.progress",
             payload: {
               toolUseId: message.tool_use_id,
@@ -2550,6 +2574,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           assistantTextBlocks: new Map(),
           assistantTextBlockOrder: [],
           capturedProposedPlanKeys: new Set(),
+          taskItemIds: new Map(),
           nextSyntheticAssistantBlockIndex: -1,
         };
 

@@ -996,6 +996,84 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("attaches Claude subagent task progress to the collab tool item", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 8).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "delegate this",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-task-item-link",
+        uuid: "stream-task-item-link",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-task-link-1",
+            name: "Task",
+            input: {
+              description: "Review the database layer",
+            },
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "tool_progress",
+        session_id: "sdk-session-task-item-link",
+        uuid: "tool-progress-task-link",
+        parent_tool_use_id: null,
+        tool_use_id: "tool-task-link-1",
+        tool_name: "Task",
+        task_id: "task-subagent-link-1",
+        elapsed_time_seconds: 1,
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-subagent-link-1",
+        description: "Running background teammate",
+        summary: "Code reviewer checked the migration edge cases.",
+        session_id: "sdk-session-task-item-link",
+        uuid: "task-progress-task-link",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const progressEvent = runtimeEvents.find(
+        (event) =>
+          event.type === "task.progress" && event.payload.taskId === "task-subagent-link-1",
+      );
+      assert.equal(progressEvent?.type, "task.progress");
+      if (progressEvent?.type === "task.progress") {
+        assert.equal(progressEvent.itemId, "tool-task-link-1");
+        assert.equal(progressEvent.providerRefs?.providerItemId, "tool-task-link-1");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect(
     "emits completion only after turn result when assistant frames arrive before deltas",
     () => {

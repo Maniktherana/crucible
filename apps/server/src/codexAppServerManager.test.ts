@@ -38,6 +38,7 @@ function createSendTurnHarness() {
       sparkEnabled: true,
     },
     collabReceiverTurns: new Map(),
+    collabReceiverItems: new Map(),
   };
 
   const requireSession = vi
@@ -77,6 +78,7 @@ function createThreadControlHarness() {
       updatedAt: "2026-02-10T00:00:00.000Z",
     },
     collabReceiverTurns: new Map(),
+    collabReceiverItems: new Map(),
   };
 
   const requireSession = vi
@@ -120,6 +122,7 @@ function createPendingUserInputHarness() {
       ],
     ]),
     collabReceiverTurns: new Map(),
+    collabReceiverItems: new Map(),
   };
 
   const requireSession = vi
@@ -161,6 +164,7 @@ function createCollabNotificationHarness() {
     pendingApprovals: new Map(),
     pendingUserInputs: new Map(),
     collabReceiverTurns: new Map<string, string>(),
+    collabReceiverItems: new Map<string, string>(),
     nextRequestId: 1,
     stopping: false,
   };
@@ -762,6 +766,7 @@ describe("respondToUserInput", () => {
       pendingApprovals: new Map(),
       pendingUserInputs: new Map(),
       collabReceiverTurns: new Map(),
+      collabReceiverItems: new Map(),
     };
     type ApprovalRequestContext = {
       session: typeof context.session;
@@ -930,6 +935,51 @@ describe("collab child conversation routing", () => {
         method: "item/commandExecution/requestApproval",
         turnId: "turn_parent",
         itemId: "call_child_1",
+      }),
+    );
+  });
+
+  it("rewrites child task notifications onto the parent collab item when no child item id exists", () => {
+    const { manager, context, emitEvent } = createCollabNotificationHarness();
+
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "item/completed",
+      params: {
+        item: {
+          type: "collabAgentToolCall",
+          id: "call_collab_1",
+          receiverThreadIds: ["child_provider_1"],
+        },
+        threadId: "provider_parent",
+        turnId: "turn_parent",
+      },
+    });
+    emitEvent.mockClear();
+
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "codex/event/task_started",
+      params: {
+        threadId: "child_provider_1",
+        msg: {
+          type: "task_started",
+          turn_id: "turn_child_1",
+        },
+      },
+    });
+
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "codex/event/task_started",
+        turnId: "turn_parent",
+        itemId: "call_collab_1",
       }),
     );
   });
