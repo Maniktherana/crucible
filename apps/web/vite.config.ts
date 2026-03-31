@@ -46,18 +46,6 @@ export default defineConfig({
         find: /^~\/(.*)$/,
         replacement: path.resolve(import.meta.dirname, "./src/$1"),
       },
-      {
-        find: /^@t3tools\/contracts$/,
-        replacement: path.resolve(import.meta.dirname, "../../packages/contracts/src/index.ts"),
-      },
-      {
-        find: /^@t3tools\/contracts\/settings$/,
-        replacement: path.resolve(import.meta.dirname, "../../packages/contracts/src/settings.ts"),
-      },
-      {
-        find: /^@t3tools\/shared\/(.*)$/,
-        replacement: path.resolve(import.meta.dirname, "../../packages/shared/src/$1.ts"),
-      },
     ],
   },
   server: {

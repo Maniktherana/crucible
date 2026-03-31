@@ -1,5 +1,3 @@
-import * as path from "node:path";
-
 import { defineConfig } from "vite-plus";
 
 const isWorkspaceRoot = process.cwd() === import.meta.dirname;
@@ -48,20 +46,6 @@ export default defineConfig({
   },
   resolve: {
     tsconfigPaths: true,
-    alias: [
-      {
-        find: /^@t3tools\/contracts$/,
-        replacement: path.resolve(import.meta.dirname, "./packages/contracts/src/index.ts"),
-      },
-      {
-        find: /^@t3tools\/contracts\/settings$/,
-        replacement: path.resolve(import.meta.dirname, "./packages/contracts/src/settings.ts"),
-      },
-      {
-        find: /^@t3tools\/shared\/(.*)$/,
-        replacement: path.resolve(import.meta.dirname, "./packages/shared/src/$1.ts"),
-      },
-    ],
   },
   test: {
     testTimeout: 15_000,

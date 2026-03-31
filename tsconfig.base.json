@@ -1,6 +1,5 @@
 {
   "compilerOptions": {
-    "baseUrl": ".",
     "target": "ES2023",
     "module": "ESNext",
     "moduleResolution": "Bundler",
@@ -13,11 +12,6 @@
     "skipLibCheck": true,
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
-    "resolveJsonModule": true,
-    "paths": {
-      "@t3tools/contracts": ["packages/contracts/src/index.ts"],
-      "@t3tools/contracts/settings": ["packages/contracts/src/settings.ts"],
-      "@t3tools/shared/*": ["packages/shared/src/*"]
-    }
+    "resolveJsonModule": true
   }
 }

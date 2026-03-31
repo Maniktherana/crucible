@@ -8,44 +8,44 @@
   "type": "module",
   "exports": {
     "./model": {
-      "types": "./dist/model.d.mts",
-      "import": "./dist/model.mjs"
+      "types": "./src/model.ts",
+      "import": "./src/model.ts"
     },
     "./git": {
-      "types": "./dist/git.d.mts",
-      "import": "./dist/git.mjs"
+      "types": "./src/git.ts",
+      "import": "./src/git.ts"
     },
     "./logging": {
-      "types": "./dist/logging.d.mts",
-      "import": "./dist/logging.mjs"
+      "types": "./src/logging.ts",
+      "import": "./src/logging.ts"
     },
     "./shell": {
-      "types": "./dist/shell.d.mts",
-      "import": "./dist/shell.mjs"
+      "types": "./src/shell.ts",
+      "import": "./src/shell.ts"
     },
     "./Net": {
-      "types": "./dist/Net.d.mts",
-      "import": "./dist/Net.mjs"
+      "types": "./src/Net.ts",
+      "import": "./src/Net.ts"
     },
     "./DrainableWorker": {
-      "types": "./dist/DrainableWorker.d.mts",
-      "import": "./dist/DrainableWorker.mjs"
+      "types": "./src/DrainableWorker.ts",
+      "import": "./src/DrainableWorker.ts"
     },
     "./KeyedCoalescingWorker": {
-      "types": "./dist/KeyedCoalescingWorker.d.mts",
-      "import": "./dist/KeyedCoalescingWorker.mjs"
+      "types": "./src/KeyedCoalescingWorker.ts",
+      "import": "./src/KeyedCoalescingWorker.ts"
     },
     "./schemaJson": {
-      "types": "./dist/schemaJson.d.mts",
-      "import": "./dist/schemaJson.mjs"
+      "types": "./src/schemaJson.ts",
+      "import": "./src/schemaJson.ts"
     },
     "./Struct": {
-      "types": "./dist/Struct.d.mts",
-      "import": "./dist/Struct.mjs"
+      "types": "./src/Struct.ts",
+      "import": "./src/Struct.ts"
     },
     "./String": {
-      "types": "./dist/String.d.mts",
-      "import": "./dist/String.mjs"
+      "types": "./src/String.ts",
+      "import": "./src/String.ts"
     }
   },
   "scripts": {

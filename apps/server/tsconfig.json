@@ -21,14 +21,5 @@
       }
     ]
   },
-  "include": [
-    "src",
-    "vite.config.ts",
-    "scripts",
-    "integration",
-    "../../scripts/lib",
-    "../../packages/contracts/src",
-    "../../packages/shared/src"
-  ],
-  "exclude": ["../../packages/contracts/src/**/*.test.ts", "../../packages/shared/src/**/*.test.ts"]
+  "include": ["src", "vite.config.ts", "scripts", "integration", "../../scripts/lib"]
 }

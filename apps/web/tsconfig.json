@@ -1,7 +1,6 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "baseUrl": ".",
     "composite": true,
     "jsx": "react-jsx",
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
@@ -22,6 +21,5 @@
       }
     ]
   },
-  "include": ["src", "vite.config.ts", "../../packages/contracts/src", "../../packages/shared/src"],
-  "exclude": ["../../packages/contracts/src/**/*.test.ts", "../../packages/shared/src/**/*.test.ts"]
+  "include": ["src", "vite.config.ts"]
 }
