@@ -623,24 +623,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     )(function* (event, attachmentSideEffects) {
       switch (event.type) {
         case "thread.message-sent": {
-          const existingRows = yield* projectionThreadMessageRepository.listByThreadId({
-            threadId: event.payload.threadId,
+          const existingMessage = yield* projectionThreadMessageRepository.getByMessageId({
+            messageId: event.payload.messageId,
           });
-          const existingMessage = existingRows.find(
-            (row) => row.messageId === event.payload.messageId,
-          );
           const nextText =
-            existingMessage && event.payload.streaming
-              ? `${existingMessage.text}${event.payload.text}`
-              : existingMessage && event.payload.text.length === 0
-                ? existingMessage.text
+            Option.isSome(existingMessage) && event.payload.streaming
+              ? `${existingMessage.value.text}${event.payload.text}`
+              : Option.isSome(existingMessage) && event.payload.text.length === 0
+                ? existingMessage.value.text
                 : event.payload.text;
           const nextAttachments =
             event.payload.attachments !== undefined
               ? yield* materializeAttachmentsForProjection({
                   attachments: event.payload.attachments,
                 })
-              : existingMessage?.attachments;
+              : Option.isSome(existingMessage)
+                ? existingMessage.value.attachments
+                : undefined;
           yield* projectionThreadMessageRepository.upsert({
             messageId: event.payload.messageId,
             threadId: event.payload.threadId,
@@ -649,7 +648,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             text: nextText,
             ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
             isStreaming: event.payload.streaming,
-            createdAt: existingMessage?.createdAt ?? event.payload.createdAt,
+            createdAt: Option.isSome(existingMessage)
+              ? existingMessage.value.createdAt
+              : event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
           });
           return;
