@@ -5,25 +5,17 @@ import {
   fetchRemoteEnvironmentDescriptor,
   fetchRemoteSessionState,
   issueRemoteWebSocketToken,
+  resolveRemotePairingTarget,
   resolveRemoteWebSocketConnectionUrl,
-} from "./api";
-import { resolveRemotePairingTarget } from "./target";
+} from "./remote";
 
 const originalFetch = globalThis.fetch;
 
 beforeEach(() => {
-  Object.defineProperty(globalThis, "window", {
-    configurable: true,
-    value: {
-      location: {
-        origin: "https://app.example.com",
-      },
-    },
-  });
   vi.restoreAllMocks();
 });
 
-describe("remote environment api", () => {
+describe("remote", () => {
   it("derives backend urls and token from a pairing url", () => {
     expect(
       resolveRemotePairingTarget({
@@ -208,7 +200,7 @@ describe("remote environment api", () => {
     });
   });
 
-  it("mints a websocket url with a short-lived ws token", async () => {
+  it("mints a websocket url that targets the rpc route with a short-lived ws token", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
