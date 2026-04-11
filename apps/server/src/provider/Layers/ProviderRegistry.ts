@@ -9,22 +9,28 @@ import { Effect, Equal, Layer, PubSub, Ref, Stream } from "effect";
 import { ClaudeProviderLive } from "./ClaudeProvider";
 import { CodexProviderLive } from "./CodexProvider";
 import { CursorProviderLive } from "./CursorProvider";
-import type { ClaudeProviderShape } from "../Services/ClaudeProvider";
 import { ClaudeProvider } from "../Services/ClaudeProvider";
-import type { CodexProviderShape } from "../Services/CodexProvider";
 import { CodexProvider } from "../Services/CodexProvider";
-import type { CursorProviderShape } from "../Services/CursorProvider";
 import { CursorProvider } from "../Services/CursorProvider";
 import { ProviderRegistry, type ProviderRegistryShape } from "../Services/ProviderRegistry";
 
-const loadProviders = (
-  codexProvider: CodexProviderShape,
-  claudeProvider: ClaudeProviderShape,
-  cursorProvider: CursorProviderShape,
-): Effect.Effect<readonly [ServerProvider, ServerProvider, ServerProvider]> =>
-  Effect.all([codexProvider.getSnapshot, claudeProvider.getSnapshot, cursorProvider.getSnapshot], {
-    concurrency: "unbounded",
-  });
+const PROVIDER_ORDER: ReadonlyArray<ProviderKind> = ["codex", "claudeAgent", "cursor"];
+
+const sortProviders = (providers: ReadonlyArray<ServerProvider>): ReadonlyArray<ServerProvider> =>
+  [...providers].toSorted(
+    (left, right) =>
+      PROVIDER_ORDER.indexOf(left.provider as ProviderKind) -
+      PROVIDER_ORDER.indexOf(right.provider as ProviderKind),
+  );
+
+const upsertProvider = (
+  providers: ReadonlyArray<ServerProvider>,
+  nextProvider: ServerProvider,
+): ReadonlyArray<ServerProvider> =>
+  sortProviders([
+    ...providers.filter((provider) => provider.provider !== nextProvider.provider),
+    nextProvider,
+  ]);
 
 export const haveProvidersChanged = (
   previousProviders: ReadonlyArray<ServerProvider>,
@@ -41,15 +47,16 @@ export const ProviderRegistryLive = Layer.effect(
       PubSub.unbounded<ReadonlyArray<ServerProvider>>(),
       PubSub.shutdown,
     );
-    const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>(
-      yield* loadProviders(codexProvider, claudeProvider, cursorProvider),
-    );
+    const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>([]);
 
-    const syncProviders = Effect.fn("syncProviders")(function* (options?: {
-      readonly publish?: boolean;
-    }) {
+    const applyProviderSnapshot = Effect.fn("applyProviderSnapshot")(function* (
+      nextProvider: ServerProvider,
+      options?: {
+        readonly publish?: boolean;
+      },
+    ) {
       const previousProviders = yield* Ref.get(providersRef);
-      const providers = yield* loadProviders(codexProvider, claudeProvider, cursorProvider);
+      const providers = upsertProvider(previousProviders, nextProvider);
       yield* Ref.set(providersRef, providers);
 
       if (options?.publish !== false && haveProvidersChanged(previousProviders, providers)) {
@@ -59,44 +66,69 @@ export const ProviderRegistryLive = Layer.effect(
       return providers;
     });
 
-    yield* Stream.runForEach(codexProvider.streamChanges, () => syncProviders()).pipe(
-      Effect.forkScoped,
-    );
-    yield* Stream.runForEach(claudeProvider.streamChanges, () => syncProviders()).pipe(
-      Effect.forkScoped,
-    );
-    yield* Stream.runForEach(cursorProvider.streamChanges, () => syncProviders()).pipe(
-      Effect.forkScoped,
-    );
+    const loadInitialProvider = (effect: Effect.Effect<ServerProvider>) =>
+      effect.pipe(
+        Effect.flatMap((provider) => applyProviderSnapshot(provider)),
+        Effect.ignoreCause({ log: true }),
+        Effect.forkScoped,
+        Effect.asVoid,
+      );
+
+    const refreshProviders = Effect.fn("refreshProviders")(function* (options?: {
+      readonly publish?: boolean;
+    }) {
+      const snapshots = yield* Effect.all(
+        [codexProvider.refresh, claudeProvider.refresh, cursorProvider.refresh],
+        {
+          concurrency: "unbounded",
+        },
+      );
+      for (const snapshot of snapshots) {
+        yield* applyProviderSnapshot(snapshot, options);
+      }
+      return yield* Ref.get(providersRef);
+    });
+
+    yield* Stream.runForEach(codexProvider.streamChanges, (provider) =>
+      Effect.asVoid(applyProviderSnapshot(provider)),
+    ).pipe(Effect.forkScoped);
+    yield* Stream.runForEach(claudeProvider.streamChanges, (provider) =>
+      Effect.asVoid(applyProviderSnapshot(provider)),
+    ).pipe(Effect.forkScoped);
+    yield* Stream.runForEach(cursorProvider.streamChanges, (provider) =>
+      Effect.asVoid(applyProviderSnapshot(provider)),
+    ).pipe(Effect.forkScoped);
+
+    yield* loadInitialProvider(codexProvider.getSnapshot);
+    yield* loadInitialProvider(claudeProvider.getSnapshot);
+    yield* loadInitialProvider(cursorProvider.getSnapshot);
 
     const refresh = Effect.fn("refresh")(function* (provider?: ProviderKind) {
       switch (provider) {
-        case "codex":
-          yield* codexProvider.refresh;
+        case "codex": {
+          const snapshot = yield* codexProvider.refresh;
+          yield* applyProviderSnapshot(snapshot);
           break;
-        case "claudeAgent":
-          yield* claudeProvider.refresh;
+        }
+        case "claudeAgent": {
+          const snapshot = yield* claudeProvider.refresh;
+          yield* applyProviderSnapshot(snapshot);
           break;
-        case "cursor":
-          yield* cursorProvider.refresh;
+        }
+        case "cursor": {
+          const snapshot = yield* cursorProvider.refresh;
+          yield* applyProviderSnapshot(snapshot);
           break;
+        }
         default:
-          yield* Effect.all(
-            [codexProvider.refresh, claudeProvider.refresh, cursorProvider.refresh],
-            {
-              concurrency: "unbounded",
-            },
-          );
+          yield* refreshProviders({ publish: true });
           break;
       }
-      return yield* syncProviders();
+      return yield* Ref.get(providersRef);
     });
 
     return {
-      getProviders: syncProviders({ publish: false }).pipe(
-        Effect.tapError(Effect.logError),
-        Effect.orElseSucceed(() => []),
-      ),
+      getProviders: Ref.get(providersRef),
       refresh: (provider?: ProviderKind) =>
         refresh(provider).pipe(
           Effect.tapError(Effect.logError),

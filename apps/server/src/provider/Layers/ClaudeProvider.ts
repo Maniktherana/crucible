@@ -106,6 +106,48 @@ export function getClaudeModelCapabilities(model: string | null | undefined): Mo
   );
 }
 
+function buildInitialClaudeProviderSnapshot(claudeSettings: ClaudeSettings): ServerProvider {
+  const checkedAt = new Date().toISOString();
+  const models = providerModelsFromSettings(
+    BUILT_IN_MODELS,
+    PROVIDER,
+    claudeSettings.customModels,
+    DEFAULT_CLAUDE_MODEL_CAPABILITIES,
+  );
+
+  if (!claudeSettings.enabled) {
+    return buildServerProvider({
+      provider: PROVIDER,
+      enabled: false,
+      checkedAt,
+      models,
+      slashCommands: [],
+      probe: {
+        installed: false,
+        version: null,
+        status: "warning",
+        auth: { status: "unknown" },
+        message: "Claude is disabled in T3 Code settings.",
+      },
+    });
+  }
+
+  return buildServerProvider({
+    provider: PROVIDER,
+    enabled: true,
+    checkedAt,
+    models,
+    slashCommands: [],
+    probe: {
+      installed: true,
+      version: null,
+      status: "warning",
+      auth: { status: "unknown" },
+      message: "Checking Claude availability...",
+    },
+  });
+}
+
 export function resolveClaudeApiModelId(modelSelection: ClaudeModelSelection): string {
   return resolveApiModelId(modelSelection);
 }
@@ -703,6 +745,7 @@ export const ClaudeProviderLive = Layer.effect(
         Stream.map((settings) => settings.providers.claudeAgent),
       ),
       haveSettingsChanged: (previous, next) => !Equal.equals(previous, next),
+      buildInitialSnapshot: buildInitialClaudeProviderSnapshot,
       checkProvider,
     });
   }),

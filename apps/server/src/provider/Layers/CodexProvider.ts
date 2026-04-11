@@ -178,6 +178,48 @@ export function getCodexModelCapabilities(model: string | null | undefined): Mod
   );
 }
 
+function buildInitialCodexProviderSnapshot(codexSettings: CodexSettings): ServerProvider {
+  const checkedAt = new Date().toISOString();
+  const models = providerModelsFromSettings(
+    BUILT_IN_MODELS,
+    PROVIDER,
+    codexSettings.customModels,
+    DEFAULT_CODEX_MODEL_CAPABILITIES,
+  );
+
+  if (!codexSettings.enabled) {
+    return buildServerProvider({
+      provider: PROVIDER,
+      enabled: false,
+      checkedAt,
+      models,
+      skills: [],
+      probe: {
+        installed: false,
+        version: null,
+        status: "warning",
+        auth: { status: "unknown" },
+        message: "Codex is disabled in T3 Code settings.",
+      },
+    });
+  }
+
+  return buildServerProvider({
+    provider: PROVIDER,
+    enabled: true,
+    checkedAt,
+    models,
+    skills: [],
+    probe: {
+      installed: true,
+      version: null,
+      status: "warning",
+      auth: { status: "unknown" },
+      message: "Checking Codex CLI availability...",
+    },
+  });
+}
+
 export function parseAuthStatusFromOutput(result: CommandResult): {
   readonly status: Exclude<ServerProviderState, "disabled">;
   readonly auth: Pick<ServerProviderAuth, "status">;
@@ -602,6 +644,7 @@ export const CodexProviderLive = Layer.effect(
         Stream.map((settings) => settings.providers.codex),
       ),
       haveSettingsChanged: (previous, next) => !Equal.equals(previous, next),
+      buildInitialSnapshot: buildInitialCodexProviderSnapshot,
       checkProvider,
     });
   }),

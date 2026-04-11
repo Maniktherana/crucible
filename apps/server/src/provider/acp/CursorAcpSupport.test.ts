@@ -10,8 +10,8 @@ const parameterizedGpt54ConfigOptions: ReadonlyArray<EffectAcpSchema.SessionConf
     name: "Model",
     category: "model",
     type: "select",
-    currentValue: "gpt-5.4",
-    options: [{ value: "gpt-5.4", name: "GPT-5.4" }],
+    currentValue: "gpt-5.4-medium-fast",
+    options: [{ value: "gpt-5.4-medium-fast", name: "GPT-5.4" }],
   },
   {
     id: "reasoning",
@@ -98,7 +98,7 @@ describe("applyCursorAcpModelSelection", () => {
     await Effect.runPromise(
       applyCursorAcpModelSelection({
         runtime,
-        model: "gpt-5.4[reasoning=medium,context=272k]",
+        model: "gpt-5.4-medium-fast[reasoning=medium,context=272k]",
         modelOptions: {
           reasoning: "xhigh",
           contextWindow: "1m",
@@ -114,7 +114,7 @@ describe("applyCursorAcpModelSelection", () => {
     );
 
     expect(calls).toEqual([
-      { type: "model", value: "gpt-5.4" },
+      { type: "model", value: "gpt-5.4-medium-fast" },
       { type: "config", configId: "reasoning", value: "extra-high" },
       { type: "config", configId: "context", value: "1m" },
       { type: "config", configId: "fast", value: "true" },

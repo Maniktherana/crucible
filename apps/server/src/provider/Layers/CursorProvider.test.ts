@@ -3,22 +3,21 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import {
   buildCursorCapabilitiesFromConfigOptions,
-  getCursorModelCapabilities,
+  buildCursorDiscoveredModelsFromConfigOptions,
+  getCursorFallbackModels,
   getCursorParameterizedModelPickerUnsupportedMessage,
   parseCursorAboutOutput,
   parseCursorCliConfigChannel,
   parseCursorVersionDate,
   resolveCursorAcpBaseModelId,
   resolveCursorAcpConfigUpdates,
-  resolveCursorAgentModel,
-  resolveCursorAcpModelId,
 } from "./CursorProvider.ts";
 
 const parameterizedGpt54ConfigOptions = [
   {
     type: "select",
-    currentValue: "gpt-5.4",
-    options: [{ name: "GPT-5.4", value: "gpt-5.4" }],
+    currentValue: "gpt-5.4-medium-fast",
+    options: [{ name: "GPT-5.4", value: "gpt-5.4-medium-fast" }],
     category: "model",
     id: "model",
     name: "Model",
@@ -64,8 +63,8 @@ const parameterizedGpt54ConfigOptions = [
 const parameterizedClaudeConfigOptions = [
   {
     type: "select",
-    currentValue: "claude-opus-4-6",
-    options: [{ name: "Opus 4.6", value: "claude-opus-4-6" }],
+    currentValue: "claude-4.6-opus-high-thinking",
+    options: [{ name: "Opus 4.6", value: "claude-4.6-opus-high-thinking" }],
     category: "model",
     id: "model",
     name: "Model",
@@ -91,42 +90,55 @@ const parameterizedClaudeConfigOptions = [
   },
 ] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
 
-describe("resolveCursorAcpModelId", () => {
-  it("emits ACP model ids that match explicit Cursor ACP config values", () => {
-    expect(resolveCursorAcpModelId("composer-2", { fastMode: true })).toBe("composer-2[fast=true]");
-    expect(resolveCursorAcpModelId("gpt-5.4", undefined)).toBe("gpt-5.4");
+const sessionNewCursorConfigOptions = [
+  {
+    type: "select",
+    currentValue: "agent",
+    options: [
+      { name: "Agent", value: "agent", description: "Full agent capabilities with tool access" },
+    ],
+    category: "mode",
+    id: "mode",
+    name: "Mode",
+    description: "Controls how the agent executes tasks",
+  },
+  {
+    type: "select",
+    currentValue: "composer-2",
+    options: [
+      { name: "Auto", value: "default" },
+      { name: "Composer 2", value: "composer-2" },
+      { name: "GPT-5.4", value: "gpt-5.4" },
+      { name: "Sonnet 4.6", value: "claude-sonnet-4-6" },
+      { name: "Opus 4.6", value: "claude-opus-4-6" },
+      { name: "Codex 5.3 Spark", value: "gpt-5.3-codex-spark" },
+    ],
+    category: "model",
+    id: "model",
+    name: "Model",
+    description: "Controls which model is used for responses",
+  },
+  {
+    type: "select",
+    currentValue: "true",
+    options: [
+      { name: "Off", value: "false" },
+      { name: "Fast", value: "true" },
+    ],
+    category: "model_config",
+    id: "fast",
+    name: "Fast",
+    description: "Faster speeds.",
+  },
+] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+
+describe("getCursorFallbackModels", () => {
+  it("does not publish any built-in cursor models before ACP discovery", () => {
     expect(
-      resolveCursorAcpModelId("claude-opus-4-6", {
-        reasoning: "high",
-        thinking: true,
-        contextWindow: "1m",
-      }),
-    ).toBe("claude-opus-4-6[effort=high,thinking=true,context=1m]");
-    expect(resolveCursorAcpModelId("gpt-5.3-codex", undefined)).toBe(
-      "gpt-5.3-codex[reasoning=medium,fast=false]",
-    );
-  });
-
-  it("preserves unrecognized ACP model slugs instead of forcing bracket notation", () => {
-    expect(resolveCursorAcpModelId("gpt-5.4-1m", undefined)).toBe("gpt-5.4-1m");
-    expect(resolveCursorAcpModelId("auto", undefined)).toBe("auto");
-    expect(resolveCursorAcpModelId("claude-4.6-opus", undefined)).toBe("claude-4.6-opus");
-  });
-
-  it("passes custom models through unchanged", () => {
-    expect(resolveCursorAcpModelId("custom/internal-model", undefined)).toBe(
-      "custom/internal-model",
-    );
-  });
-});
-
-describe("getCursorModelCapabilities", () => {
-  it("resolves capabilities from canonical cursor base slugs", () => {
-    expect(getCursorModelCapabilities("gpt-5.4").contextWindowOptions).toEqual([
-      { value: "272k", label: "272k", isDefault: true },
-      { value: "1m", label: "1M" },
-    ]);
-    expect(getCursorModelCapabilities("claude-opus-4-6").supportsThinkingToggle).toBe(true);
+      getCursorFallbackModels({
+        customModels: ["internal/cursor-model"],
+      }).map((model) => model.slug),
+    ).toEqual(["internal/cursor-model"]);
   });
 });
 
@@ -161,6 +173,85 @@ describe("buildCursorCapabilitiesFromConfigOptions", () => {
       contextWindowOptions: [],
       promptInjectedEffortLevels: [],
     });
+  });
+});
+
+describe("buildCursorDiscoveredModelsFromConfigOptions", () => {
+  it("publishes ACP model choices immediately from session/new config options", () => {
+    expect(buildCursorDiscoveredModelsFromConfigOptions(sessionNewCursorConfigOptions)).toEqual([
+      {
+        slug: "default",
+        name: "Auto",
+        isCustom: false,
+        capabilities: {
+          reasoningEffortLevels: [],
+          supportsFastMode: false,
+          supportsThinkingToggle: false,
+          contextWindowOptions: [],
+          promptInjectedEffortLevels: [],
+        },
+      },
+      {
+        slug: "composer-2",
+        name: "Composer 2",
+        isCustom: false,
+        capabilities: {
+          reasoningEffortLevels: [],
+          supportsFastMode: true,
+          supportsThinkingToggle: false,
+          contextWindowOptions: [],
+          promptInjectedEffortLevels: [],
+        },
+      },
+      {
+        slug: "gpt-5.4",
+        name: "GPT-5.4",
+        isCustom: false,
+        capabilities: {
+          reasoningEffortLevels: [],
+          supportsFastMode: false,
+          supportsThinkingToggle: false,
+          contextWindowOptions: [],
+          promptInjectedEffortLevels: [],
+        },
+      },
+      {
+        slug: "claude-sonnet-4-6",
+        name: "Sonnet 4.6",
+        isCustom: false,
+        capabilities: {
+          reasoningEffortLevels: [],
+          supportsFastMode: false,
+          supportsThinkingToggle: false,
+          contextWindowOptions: [],
+          promptInjectedEffortLevels: [],
+        },
+      },
+      {
+        slug: "claude-opus-4-6",
+        name: "Opus 4.6",
+        isCustom: false,
+        capabilities: {
+          reasoningEffortLevels: [],
+          supportsFastMode: false,
+          supportsThinkingToggle: false,
+          contextWindowOptions: [],
+          promptInjectedEffortLevels: [],
+        },
+      },
+      {
+        slug: "gpt-5.3-codex-spark",
+        name: "Codex 5.3 Spark",
+        isCustom: false,
+        capabilities: {
+          reasoningEffortLevels: [],
+          supportsFastMode: false,
+          supportsThinkingToggle: false,
+          contextWindowOptions: [],
+          promptInjectedEffortLevels: [],
+        },
+      },
+    ]);
   });
 });
 
@@ -273,8 +364,12 @@ describe("Cursor parameterized model picker preview gating", () => {
 });
 
 describe("resolveCursorAcpBaseModelId", () => {
-  it("drops parameterized ACP traits and preserves base model ids", () => {
+  it("drops bracket traits without rewriting raw ACP model ids", () => {
     expect(resolveCursorAcpBaseModelId("gpt-5.4[reasoning=medium,context=272k]")).toBe("gpt-5.4");
+    expect(resolveCursorAcpBaseModelId("gpt-5.4-medium-fast")).toBe("gpt-5.4-medium-fast");
+    expect(resolveCursorAcpBaseModelId("claude-4.6-opus-high-thinking")).toBe(
+      "claude-4.6-opus-high-thinking",
+    );
     expect(resolveCursorAcpBaseModelId("composer-2")).toBe("composer-2");
     expect(resolveCursorAcpBaseModelId("auto")).toBe("auto");
   });
@@ -309,32 +404,5 @@ describe("resolveCursorAcpConfigUpdates", () => {
         fastMode: false,
       }),
     ).toEqual([{ configId: "fast", value: "false" }]);
-  });
-});
-
-describe("resolveCursorAgentModel", () => {
-  it("maps canonical base slugs onto agent CLI model ids", () => {
-    expect(resolveCursorAgentModel("composer-2", { fastMode: true })).toBe("composer-2-fast");
-    expect(resolveCursorAgentModel("gpt-5.3-codex", { reasoning: "xhigh" })).toBe(
-      "gpt-5.3-codex-xhigh",
-    );
-    expect(
-      resolveCursorAgentModel("gpt-5.4", {
-        reasoning: "medium",
-        fastMode: true,
-        contextWindow: "272k",
-      }),
-    ).toBe("gpt-5.4-medium-fast");
-    expect(resolveCursorAgentModel("claude-opus-4-6", { thinking: true })).toBe(
-      "claude-4.6-opus-high-thinking",
-    );
-    expect(resolveCursorAgentModel("auto", undefined)).toBe("auto");
-  });
-
-  it("passes custom agent model ids through unchanged", () => {
-    expect(resolveCursorAgentModel("gpt-5.4-mini-medium", undefined)).toBe("gpt-5.4-mini-medium");
-    expect(resolveCursorAgentModel("custom/internal-model", undefined)).toBe(
-      "custom/internal-model",
-    );
   });
 });

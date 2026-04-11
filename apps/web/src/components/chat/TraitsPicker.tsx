@@ -433,6 +433,13 @@ export const TraitsPicker = memo(function TraitsPicker({
   const effortLabel = effort
     ? (effortLevels.find((l) => l.value === effort)?.label ?? effort)
     : null;
+  const primaryTraitLabel = ultrathinkPromptControlled
+    ? "Ultrathink"
+    : effortLabel
+      ? effortLabel
+      : thinkingEnabled === null
+        ? null
+        : `Thinking ${thinkingEnabled ? "On" : "Off"}`;
   const contextWindowLabel =
     showContextWindow && contextWindow !== defaultContextWindow
       ? (contextWindowOptions.find((o) => o.value === contextWindow)?.label ?? null)
@@ -452,23 +459,26 @@ export const TraitsPicker = memo(function TraitsPicker({
     return null;
   }
 
+  const selectedTriggerTraits = [
+    primaryTraitLabel,
+    ...(caps.supportsFastMode &&
+    (fastModeEnabled || (primaryTraitLabel === null && contextWindowLabel !== null))
+      ? [fastModeEnabled ? "Fast" : "Normal"]
+      : []),
+    ...(contextWindowLabel ? [contextWindowLabel] : []),
+  ].filter(Boolean);
   const triggerLabel = fastOnlyControl
     ? fastModeEnabled
       ? "Fast"
       : "Normal"
-    : [
-        ultrathinkPromptControlled
-          ? "Ultrathink"
-          : effortLabel
-            ? effortLabel
-            : thinkingEnabled === null
-              ? null
-              : `Thinking ${thinkingEnabled ? "On" : "Off"}`,
-        ...(caps.supportsFastMode && fastModeEnabled ? ["Fast"] : []),
-        ...(contextWindowLabel ? [contextWindowLabel] : []),
-      ]
-        .filter(Boolean)
-        .join(" · ");
+    : selectedTriggerTraits.length > 0
+      ? selectedTriggerTraits.join(" · ")
+      : caps.supportsFastMode
+        ? "Normal"
+        : defaultContextWindow
+          ? (contextWindowOptions.find((option) => option.value === defaultContextWindow)?.label ??
+            defaultContextWindow)
+          : "";
 
   const isCodexStyle = provider === "codex";
 

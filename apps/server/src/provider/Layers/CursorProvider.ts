@@ -13,7 +13,6 @@ import type {
   ServerSettingsError,
 } from "@t3tools/contracts";
 import type * as EffectAcpSchema from "effect-acp/schema";
-import { normalizeModelSlug, resolveContextWindow, resolveEffort } from "@t3tools/shared/model";
 import { Effect, Equal, Layer, Option, Result, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
@@ -37,157 +36,6 @@ const EMPTY_CAPABILITIES: ModelCapabilities = {
   contextWindowOptions: [],
   promptInjectedEffortLevels: [],
 };
-const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
-  {
-    slug: "default",
-    name: "Auto",
-    isCustom: false,
-    capabilities: {
-      reasoningEffortLevels: [],
-      supportsFastMode: false,
-      supportsThinkingToggle: false,
-      contextWindowOptions: [],
-      promptInjectedEffortLevels: [],
-    },
-  },
-  {
-    slug: "composer-2",
-    name: "Composer 2",
-    isCustom: false,
-    capabilities: {
-      reasoningEffortLevels: [],
-      supportsFastMode: true,
-      supportsThinkingToggle: false,
-      contextWindowOptions: [],
-      promptInjectedEffortLevels: [],
-    },
-  },
-  {
-    slug: "composer-1.5",
-    name: "Composer 1.5",
-    isCustom: false,
-    capabilities: {
-      reasoningEffortLevels: [],
-      supportsFastMode: false,
-      supportsThinkingToggle: false,
-      contextWindowOptions: [],
-      promptInjectedEffortLevels: [],
-    },
-  },
-  {
-    slug: "gpt-5.3-codex",
-    name: "Codex 5.3",
-    isCustom: false,
-    capabilities: {
-      reasoningEffortLevels: [
-        { value: "low", label: "Low" },
-        { value: "medium", label: "Medium", isDefault: true },
-        { value: "high", label: "High" },
-        { value: "xhigh", label: "Extra High" },
-      ],
-      supportsFastMode: true,
-      supportsThinkingToggle: false,
-      contextWindowOptions: [],
-      promptInjectedEffortLevels: [],
-    },
-  },
-  {
-    slug: "gpt-5.3-codex-spark",
-    name: "Codex 5.3 Spark",
-    isCustom: false,
-    capabilities: {
-      reasoningEffortLevels: [
-        { value: "low", label: "Low" },
-        { value: "medium", label: "Medium", isDefault: true },
-        { value: "high", label: "High" },
-        { value: "xhigh", label: "Extra High" },
-      ],
-      supportsFastMode: false,
-      supportsThinkingToggle: false,
-      contextWindowOptions: [],
-      promptInjectedEffortLevels: [],
-    },
-  },
-  {
-    slug: "gpt-5.4",
-    name: "GPT-5.4",
-    isCustom: false,
-    capabilities: {
-      reasoningEffortLevels: [
-        { value: "low", label: "Low" },
-        { value: "medium", label: "Medium", isDefault: true },
-        { value: "high", label: "High" },
-        { value: "xhigh", label: "Extra High" },
-      ],
-      supportsFastMode: true,
-      supportsThinkingToggle: false,
-      contextWindowOptions: [
-        { value: "272k", label: "272k", isDefault: true },
-        { value: "1m", label: "1M" },
-      ],
-      promptInjectedEffortLevels: [],
-    },
-  },
-  {
-    slug: "claude-opus-4-6",
-    name: "Opus 4.6",
-    isCustom: false,
-    capabilities: {
-      reasoningEffortLevels: [
-        { value: "low", label: "Low" },
-        { value: "medium", label: "Medium" },
-        { value: "high", label: "High", isDefault: true },
-      ],
-      supportsFastMode: true,
-      supportsThinkingToggle: true,
-      contextWindowOptions: [
-        { value: "200k", label: "200k", isDefault: true },
-        { value: "1m", label: "1M" },
-      ],
-      promptInjectedEffortLevels: [],
-    },
-  },
-  {
-    slug: "claude-sonnet-4-6",
-    name: "Sonnet 4.6",
-    isCustom: false,
-    capabilities: {
-      reasoningEffortLevels: [
-        { value: "low", label: "Low" },
-        { value: "medium", label: "Medium", isDefault: true },
-        { value: "high", label: "High" },
-      ],
-      supportsFastMode: false,
-      supportsThinkingToggle: true,
-      contextWindowOptions: [],
-      promptInjectedEffortLevels: [],
-    },
-  },
-  {
-    slug: "gemini-3.1-pro",
-    name: "Gemini 3.1 Pro",
-    isCustom: false,
-    capabilities: {
-      reasoningEffortLevels: [],
-      supportsFastMode: false,
-      supportsThinkingToggle: false,
-      contextWindowOptions: [],
-      promptInjectedEffortLevels: [],
-    },
-  },
-  {
-    slug: "grok-4-20",
-    name: "Grok 4.20",
-    isCustom: false,
-    capabilities: {
-      reasoningEffortLevels: [],
-      supportsFastMode: false,
-      supportsThinkingToggle: true,
-      contextWindowOptions: [],
-      promptInjectedEffortLevels: [],
-    },
-  },
-];
 
 const CURSOR_ACP_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
 const CURSOR_PARAMETERIZED_MODEL_PICKER_MIN_VERSION_DATE = 2026_04_08;
@@ -196,6 +44,41 @@ export const CURSOR_PARAMETERIZED_MODEL_PICKER_CAPABILITIES = {
     parameterizedModelPicker: true,
   },
 } satisfies NonNullable<EffectAcpSchema.InitializeRequest["clientCapabilities"]>;
+
+function buildInitialCursorProviderSnapshot(cursorSettings: CursorSettings): ServerProvider {
+  const checkedAt = new Date().toISOString();
+  const models = getCursorFallbackModels(cursorSettings);
+
+  if (!cursorSettings.enabled) {
+    return buildServerProvider({
+      provider: PROVIDER,
+      enabled: false,
+      checkedAt,
+      models,
+      probe: {
+        installed: false,
+        version: null,
+        status: "warning",
+        auth: { status: "unknown" },
+        message: "Cursor is disabled in T3 Code settings.",
+      },
+    });
+  }
+
+  return buildServerProvider({
+    provider: PROVIDER,
+    enabled: true,
+    checkedAt,
+    models,
+    probe: {
+      installed: true,
+      version: null,
+      status: "warning",
+      auth: { status: "unknown" },
+      message: "Checking Cursor Agent availability...",
+    },
+  });
+}
 
 interface CursorSessionSelectOption {
   readonly value: string;
@@ -225,12 +108,6 @@ function flattenSessionConfigSelectOptions(
             }) satisfies CursorSessionSelectOption,
         ),
   );
-}
-
-function normalizeCursorAcpModelSlug(modelId: string): string {
-  const trimmed = modelId.trim();
-  const base = trimmed.includes("[") ? trimmed.slice(0, trimmed.indexOf("[")) : trimmed;
-  return normalizeModelSlug(base, PROVIDER) ?? base;
 }
 
 function normalizeCursorThoughtLevelValue(value: string | null | undefined): string | undefined {
@@ -369,6 +246,75 @@ function buildCursorDiscoveredModels(
   });
 }
 
+export function buildCursorDiscoveredModelsFromConfigOptions(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): ReadonlyArray<ServerProviderModel> {
+  if (!configOptions || configOptions.length === 0) {
+    return [];
+  }
+
+  const modelOption = findCursorModelConfigOption(configOptions);
+  const modelChoices = flattenSessionConfigSelectOptions(modelOption);
+  if (!modelOption || modelChoices.length === 0) {
+    return [];
+  }
+
+  const currentModelValue =
+    modelOption.type === "select" ? modelOption.currentValue?.trim() || undefined : undefined;
+  const currentModelCapabilities = buildCursorCapabilitiesFromConfigOptions(configOptions);
+
+  return buildCursorDiscoveredModels(
+    modelChoices.map((modelChoice) => ({
+      slug: modelChoice.value.trim(),
+      name: modelChoice.name.trim(),
+      capabilities:
+        currentModelValue === modelChoice.value.trim()
+          ? currentModelCapabilities
+          : EMPTY_CAPABILITIES,
+    })),
+  );
+}
+
+const makeCursorAcpProbeRuntime = (cursorSettings: CursorSettings) =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const acpContext = yield* Layer.build(
+      AcpSessionRuntime.layer({
+        spawn: {
+          command: cursorSettings.binaryPath,
+          args: [
+            ...(cursorSettings.apiEndpoint ? (["-e", cursorSettings.apiEndpoint] as const) : []),
+            "acp",
+          ],
+          cwd: process.cwd(),
+        },
+        cwd: process.cwd(),
+        clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
+        authMethodId: "cursor_login",
+        clientCapabilities: CURSOR_PARAMETERIZED_MODEL_PICKER_CAPABILITIES,
+      }).pipe(Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner))),
+    );
+    return yield* Effect.service(AcpSessionRuntime).pipe(Effect.provide(acpContext));
+  }).pipe(Effect.scoped);
+
+function updateCursorModelCapabilities(
+  snapshot: ServerProvider,
+  modelSlug: string,
+  capabilities: ModelCapabilities,
+): ServerProvider {
+  const nextModels = snapshot.models.map((model) =>
+    model.slug === modelSlug ? { ...model, capabilities } : model,
+  );
+
+  return Equal.equals(snapshot.models, nextModels)
+    ? snapshot
+    : {
+        ...snapshot,
+        checkedAt: new Date().toISOString(),
+        models: nextModels,
+      };
+}
+
 function normalizeCursorConfigOptionToken(value: string | null | undefined): string {
   return (
     value
@@ -402,8 +348,9 @@ function findCursorBooleanConfigValue(
 }
 
 export function resolveCursorAcpBaseModelId(model: string | null | undefined): string {
-  const normalized = normalizeModelSlug(model, PROVIDER) ?? "default";
-  return normalized.includes("[") ? normalized.slice(0, normalized.indexOf("[")) : normalized;
+  const trimmed = model?.trim();
+  const base = trimmed && trimmed.length > 0 ? trimmed : "default";
+  return base.includes("[") ? base.slice(0, base.indexOf("[")) : base;
 }
 
 export function resolveCursorAcpConfigUpdates(
@@ -471,169 +418,67 @@ export function resolveCursorAcpConfigUpdates(
 
 const discoverCursorModelsViaAcp = (cursorSettings: CursorSettings) =>
   Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const acpContext = yield* Layer.build(
-      AcpSessionRuntime.layer({
-        spawn: {
-          command: cursorSettings.binaryPath,
-          args: [
-            ...(cursorSettings.apiEndpoint ? (["-e", cursorSettings.apiEndpoint] as const) : []),
-            "acp",
-          ],
-          cwd: process.cwd(),
-        },
-        cwd: process.cwd(),
-        clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
-        authMethodId: "cursor_login",
-        clientCapabilities: CURSOR_PARAMETERIZED_MODEL_PICKER_CAPABILITIES,
-      }).pipe(Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner))),
+    const acp = yield* makeCursorAcpProbeRuntime(cursorSettings);
+    const started = yield* acp.start();
+    return buildCursorDiscoveredModelsFromConfigOptions(
+      started.sessionSetupResult.configOptions ?? [],
     );
-    const acp = yield* Effect.service(AcpSessionRuntime).pipe(Effect.provide(acpContext));
+  }).pipe(Effect.scoped);
+
+const enrichCursorModelsViaAcp = (input: {
+  readonly cursorSettings: CursorSettings;
+  readonly snapshot: ServerProvider;
+  readonly publishSnapshot: (snapshot: ServerProvider) => Effect.Effect<void>;
+}) =>
+  Effect.gen(function* () {
+    if (input.snapshot.models.length === 0) {
+      return;
+    }
+
+    const acp = yield* makeCursorAcpProbeRuntime(input.cursorSettings);
     const started = yield* acp.start();
     const initialConfigOptions = started.sessionSetupResult.configOptions ?? [];
     const modelOption = findCursorModelConfigOption(initialConfigOptions);
     const modelChoices = flattenSessionConfigSelectOptions(modelOption);
     if (!modelOption || modelChoices.length === 0) {
-      return [] as const;
+      return;
     }
 
-    const fallbackBySlug = new Map(BUILT_IN_MODELS.map((model) => [model.slug, model] as const));
     const currentModelValue =
       modelOption.type === "select" ? modelOption.currentValue?.trim() || undefined : undefined;
+    let currentSnapshot = input.snapshot;
 
-    const discoveredModels = yield* Effect.forEach(
-      modelChoices,
-      (modelChoice) =>
-        Effect.gen(function* () {
-          const slug = normalizeCursorAcpModelSlug(modelChoice.value);
-          let configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> =
-            initialConfigOptions;
-          if (currentModelValue !== modelChoice.value) {
-            configOptions = yield* acp.setConfigOption(modelOption.id, modelChoice.value).pipe(
-              Effect.map((response) => response.configOptions ?? []),
-              Effect.catch(() =>
-                Effect.succeed<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>([]),
-              ),
-            );
-          }
-          const fallbackCapabilities = fallbackBySlug.get(slug)?.capabilities ?? EMPTY_CAPABILITIES;
-          return {
-            slug,
-            name: modelChoice.name,
-            capabilities:
-              configOptions.length > 0
-                ? buildCursorCapabilitiesFromConfigOptions(configOptions)
-                : fallbackCapabilities,
-          } satisfies CursorAcpDiscoveredModel;
-        }),
-      { concurrency: 1 },
-    );
+    for (const modelChoice of modelChoices) {
+      const modelSlug = modelChoice.value.trim();
+      if (!modelSlug || modelSlug === currentModelValue) {
+        continue;
+      }
 
-    return buildCursorDiscoveredModels(discoveredModels);
+      const nextConfigOptions = yield* acp.setConfigOption(modelOption.id, modelSlug).pipe(
+        Effect.map((response) => response.configOptions ?? []),
+        Effect.timeout("3 seconds"),
+        Effect.catch(() => Effect.succeed<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>([])),
+      );
+      if (nextConfigOptions.length === 0) {
+        continue;
+      }
+
+      const nextSnapshot = updateCursorModelCapabilities(
+        currentSnapshot,
+        modelSlug,
+        buildCursorCapabilitiesFromConfigOptions(nextConfigOptions),
+      );
+      if (!Equal.equals(currentSnapshot, nextSnapshot)) {
+        currentSnapshot = nextSnapshot;
+        yield* input.publishSnapshot(nextSnapshot);
+      }
+    }
   }).pipe(Effect.scoped);
 
-export function getCursorModelCapabilities(model: string | null | undefined): ModelCapabilities {
-  const slug = normalizeModelSlug(model, "cursor");
-  return (
-    BUILT_IN_MODELS.find((candidate) => candidate.slug === slug)?.capabilities ?? EMPTY_CAPABILITIES
-  );
-}
-
-/**
- * Resolve the ACP model ID for a Cursor model to be sent to session/set_config_option
- */
-export function resolveCursorAcpModelId(
-  model: string | null | undefined,
-  modelOptions: CursorModelOptions | null | undefined,
-): string {
-  const slug = normalizeModelSlug(model, "cursor") ?? "auto";
-  if (slug.includes("[") && slug.endsWith("]")) {
-    return slug;
-  }
-  const caps = getCursorModelCapabilities(slug);
-  const isBuiltIn = BUILT_IN_MODELS.some((candidate) => candidate.slug === slug);
-  if (!isBuiltIn) {
-    return slug;
-  }
-
-  const traits: string[] = [];
-
-  if (slug === "gpt-5.3-codex") {
-    const reasoning = resolveEffort(caps, modelOptions?.reasoning) ?? "medium";
-    traits.push(`reasoning=${reasoning}`);
-    traits.push(`fast=${modelOptions?.fastMode === true}`);
-    return `${slug}[${traits.join(",")}]`;
-  }
-
-  if (caps.supportsFastMode && modelOptions?.fastMode === true) {
-    traits.push("fast=true");
-  }
-
-  if (modelOptions?.reasoning !== undefined) {
-    const reasoning = resolveEffort(caps, modelOptions.reasoning);
-    if (reasoning) {
-      traits.push(`${slug.startsWith("claude-") ? "effort" : "reasoning"}=${reasoning}`);
-    }
-  }
-
-  if (caps.supportsThinkingToggle && modelOptions?.thinking !== undefined) {
-    traits.push(`thinking=${modelOptions.thinking}`);
-  }
-
-  if (modelOptions?.contextWindow !== undefined) {
-    const contextWindow = resolveContextWindow(caps, modelOptions.contextWindow);
-    if (contextWindow) {
-      traits.push(`context=${contextWindow}`);
-    }
-  }
-
-  return traits.length > 0 ? `${slug}[${traits.join(",")}]` : slug;
-}
-
-/**
- * Resolve the Agent CLI model ID for a Cursor model to be set as `--model` arg for the `agent` command.
- *
- * Yes... Cursor uses different IDs. No... I don't know why.
- */
-export function resolveCursorAgentModel(
-  model: string | null | undefined,
-  modelOptions: CursorModelOptions | null | undefined,
-): string {
-  const normalized = normalizeModelSlug(model, "cursor") ?? "default";
-  const slug = normalized.includes("[") ? normalized.slice(0, normalized.indexOf("[")) : normalized;
-  const caps = getCursorModelCapabilities(slug);
-  const reasoning = resolveEffort(caps, modelOptions?.reasoning);
-  const thinking = caps.supportsThinkingToggle ? (modelOptions?.thinking ?? true) : undefined;
-  const fastMode = modelOptions?.fastMode === true;
-
-  switch (slug) {
-    case "default":
-      return "auto";
-    case "composer-2":
-      return fastMode ? "composer-2-fast" : "composer-2";
-    case "composer-1.5":
-      return "composer-1.5";
-    case "gpt-5.3-codex": {
-      const suffix = reasoning && reasoning !== "medium" ? `-${reasoning}` : "";
-      return `gpt-5.3-codex${suffix}${fastMode ? "-fast" : ""}`;
-    }
-    case "gpt-5.3-codex-spark": {
-      const suffix = reasoning && reasoning !== "medium" ? `-${reasoning}` : "";
-      return `gpt-5.3-codex-spark-preview${suffix}`;
-    }
-    case "gpt-5.4":
-      return `gpt-5.4-${reasoning ?? "medium"}${fastMode ? "-fast" : ""}`;
-    case "claude-opus-4-6":
-      return thinking ? "claude-4.6-opus-high-thinking" : "claude-4.6-opus-high";
-    case "claude-sonnet-4-6":
-      return thinking ? "claude-4.6-sonnet-medium-thinking" : "claude-4.6-sonnet-medium";
-    case "gemini-3.1-pro":
-      return "gemini-3.1-pro";
-    case "grok-4-20":
-      return thinking ? "grok-4-20-thinking" : "grok-4-20";
-    default:
-      return slug === "default" ? "auto" : slug;
-  }
+export function getCursorFallbackModels(
+  cursorSettings: Pick<CursorSettings, "customModels">,
+): ReadonlyArray<ServerProviderModel> {
+  return providerModelsFromSettings([], PROVIDER, cursorSettings.customModels, EMPTY_CAPABILITIES);
 }
 
 /** Timeout for `agent about` — it's slower than a simple `--version` probe. */
@@ -990,12 +835,7 @@ export const checkCursorProviderStatus = Effect.fn("checkCursorProviderStatus")(
       Effect.map((settings) => settings.providers.cursor),
     );
     const checkedAt = new Date().toISOString();
-    const fallbackModels = providerModelsFromSettings(
-      BUILT_IN_MODELS,
-      PROVIDER,
-      cursorSettings.customModels,
-      EMPTY_CAPABILITIES,
-    );
+    const fallbackModels = getCursorFallbackModels(cursorSettings);
 
     if (!cursorSettings.enabled) {
       return buildServerProvider({
@@ -1088,7 +928,7 @@ export const checkCursorProviderStatus = Effect.fn("checkCursorProviderStatus")(
     const models = providerModelsFromSettings(
       Option.getOrElse(
         Option.filter(discoveredModels, (models) => models.length > 0),
-        () => BUILT_IN_MODELS,
+        () => [] as const,
       ),
       PROVIDER,
       cursorSettings.customModels,
@@ -1130,7 +970,23 @@ export const CursorProviderLive = Layer.effect(
         Stream.map((settings) => settings.providers.cursor),
       ),
       haveSettingsChanged: (previous, next) => !Equal.equals(previous, next),
+      buildInitialSnapshot: buildInitialCursorProviderSnapshot,
       checkProvider,
+      enrichSnapshot: ({ settings, snapshot, publishSnapshot }) =>
+        (settings.enabled &&
+        snapshot.installed &&
+        snapshot.auth.status !== "unauthenticated" &&
+        snapshot.models.length > 0
+          ? enrichCursorModelsViaAcp({
+              cursorSettings: settings,
+              snapshot,
+              publishSnapshot,
+            })
+          : Effect.void
+        ).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.catchCause((cause) => Effect.logError(cause)),
+        ),
     });
   }),
 );

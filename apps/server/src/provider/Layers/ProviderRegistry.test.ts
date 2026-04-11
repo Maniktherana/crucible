@@ -609,8 +609,19 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest()))(
             const registry = yield* ProviderRegistry;
 
             const initial = yield* registry.getProviders;
+            assert.deepStrictEqual(Array.isArray(initial), true);
+
+            for (let attempt = 0; attempt < 100; attempt += 1) {
+              const refreshed = yield* registry.getProviders;
+              if (refreshed.find((status) => status.provider === "codex")?.status === "ready") {
+                break;
+              }
+              yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 5)));
+            }
+
+            const ready = yield* registry.getProviders;
             assert.strictEqual(
-              initial.find((status) => status.provider === "codex")?.status,
+              ready.find((status) => status.provider === "codex")?.status,
               "ready",
             );
 
