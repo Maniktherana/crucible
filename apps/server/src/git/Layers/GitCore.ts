@@ -532,7 +532,7 @@ const collectOutput = Effect.fn("collectOutput")(function* <E>(
     }
 
     const chunkToDecode = truncateOutputAtMaxBytes ? limitedChunk.chunk : chunk;
-    bytes = truncateOutputAtMaxBytes ? limitedChunk.nextBytes : bytes + chunk.byteLength;
+    bytes = limitedChunk.nextBytes;
     truncated = truncateOutputAtMaxBytes && limitedChunk.truncated;
 
     const decoded = decoder.decode(chunkToDecode, { stream: !truncated });
