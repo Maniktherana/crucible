@@ -160,8 +160,9 @@ const fetchText = Effect.fn("fetchText")(function* (url: string) {
   if (!response.ok) {
     const detail = yield* Effect.tryPromise({
       try: () => response.text(),
-      catch: () => "",
-    });
+      catch: (cause) =>
+        new GeneratorError({ detail: `Failed to read response body from ${url}`, cause }),
+    }).pipe(Effect.orElseSucceed(() => ""));
     return yield* Effect.fail(
       new GeneratorError({
         detail: `Failed to download ${url}: ${response.status} ${detail}`,
