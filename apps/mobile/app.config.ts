@@ -8,6 +8,7 @@ const VARIANT_CONFIG: Record<
   AppVariant,
   {
     readonly appName: string;
+    readonly scheme: string;
     readonly iosIcon: string;
     readonly iosBundleIdentifier: string;
     readonly androidPackage: string;
@@ -15,18 +16,21 @@ const VARIANT_CONFIG: Record<
 > = {
   development: {
     appName: "T3 Code Dev",
+    scheme: "t3code-dev",
     iosIcon: "./assets/icon-composer-dev.icon",
     iosBundleIdentifier: "com.t3tools.t3code.dev",
     androidPackage: "com.t3tools.t3code.dev",
   },
   preview: {
     appName: "T3 Code Preview",
+    scheme: "t3code-preview",
     iosIcon: "./assets/icon-composer-prod.icon",
     iosBundleIdentifier: "com.t3tools.t3code.preview",
     androidPackage: "com.t3tools.t3code.preview",
   },
   production: {
     appName: "T3 Code",
+    scheme: "t3code",
     iosIcon: "./assets/icon-composer-prod.icon",
     iosBundleIdentifier: "com.t3tools.t3code",
     androidPackage: "com.t3tools.t3code",
@@ -49,7 +53,7 @@ const variant = VARIANT_CONFIG[APP_VARIANT];
 const config: ExpoConfig = {
   name: variant.appName,
   slug: "t3-code",
-  scheme: "t3code",
+  scheme: variant.scheme,
   version: "0.1.0",
   runtimeVersion: {
     policy: "appVersion",
