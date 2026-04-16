@@ -805,8 +805,8 @@ async function issueRemotePairingToken(
     ...(input?.batchMode === undefined ? {} : { batchMode: input.batchMode }),
     ...(input?.interactiveAuth === undefined ? {} : { interactiveAuth: input.interactiveAuth }),
   });
-  const stdout = result.stdout.trim();
-  if (!stdout) {
+  const line = getLastNonEmptyOutputLine(result.stdout);
+  if (!line) {
     throw new Error(
       `SSH pairing did not return a credential. stdout=${JSON.stringify(result.stdout)}`,
     );
@@ -814,10 +814,10 @@ async function issueRemotePairingToken(
 
   let parsed: { credential?: unknown };
   try {
-    parsed = JSON.parse(stdout) as { credential?: unknown };
+    parsed = JSON.parse(line) as { credential?: unknown };
   } catch (cause) {
     throw new Error(
-      `SSH pairing returned unparseable output. stdout=${JSON.stringify(result.stdout)}`,
+      `SSH pairing returned unparseable output. line=${JSON.stringify(line)} stdout=${JSON.stringify(result.stdout)}`,
       { cause },
     );
   }
