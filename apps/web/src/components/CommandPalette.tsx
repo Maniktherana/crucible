@@ -369,8 +369,8 @@ function OpenCommandPaletteDialog() {
   });
   const browseEntries = browseResult?.entries ?? EMPTY_BROWSE_ENTRIES;
   const { filteredEntries: filteredBrowseEntries, exactEntry: exactBrowseEntry } = useMemo(
-    () => filterBrowseEntries({ browseEntries, browseFilterQuery, highlightedItemValue }),
-    [browseEntries, browseFilterQuery, highlightedItemValue],
+    () => filterBrowseEntries({ browseEntries, browseFilterQuery }),
+    [browseEntries, browseFilterQuery],
   );
 
   const prefetchBrowsePath = useCallback(

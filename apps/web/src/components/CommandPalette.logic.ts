@@ -51,10 +51,8 @@ export type CommandPaletteMode = "root" | "root-browse" | "submenu" | "submenu-b
 export function filterBrowseEntries(input: {
   browseEntries: ReadonlyArray<FilesystemBrowseEntry>;
   browseFilterQuery: string;
-  highlightedItemValue: string | null;
 }): {
   filteredEntries: FilesystemBrowseEntry[];
-  highlightedEntry: FilesystemBrowseEntry | null;
   exactEntry: FilesystemBrowseEntry | null;
 } {
   const lowerFilter = input.browseFilterQuery.toLowerCase();
@@ -66,18 +64,12 @@ export function filterBrowseEntries(input: {
       (showHidden || !entry.name.startsWith(".")),
   );
 
-  let highlightedEntry: FilesystemBrowseEntry | null = null;
-  if (input.highlightedItemValue?.startsWith("browse:")) {
-    const highlightedPath = input.highlightedItemValue.slice("browse:".length);
-    highlightedEntry = filteredEntries.find((entry) => entry.fullPath === highlightedPath) ?? null;
-  }
-
   const exactEntry =
     input.browseFilterQuery.length > 0
       ? (filteredEntries.find((entry) => entry.name === input.browseFilterQuery) ?? null)
       : null;
 
-  return { filteredEntries, highlightedEntry, exactEntry };
+  return { filteredEntries, exactEntry };
 }
 
 export function getBrowsePrefetchPaths(input: {
