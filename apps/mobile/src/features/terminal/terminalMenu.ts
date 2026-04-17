@@ -5,6 +5,7 @@ export interface TerminalMenuSession {
   readonly terminalId: string;
   readonly cwd: string | null;
   readonly status: "starting" | "running" | "exited" | "error" | "closed";
+  readonly hasRunningSubprocess: boolean;
   readonly updatedAt: string | null;
 }
 
@@ -76,6 +77,7 @@ export function buildTerminalMenuSessions(input: {
     terminalId: DEFAULT_TERMINAL_ID,
     cwd: input.workspaceRoot,
     status: "closed",
+    hasRunningSubprocess: false,
     updatedAt: null,
   });
 
@@ -90,8 +92,9 @@ export function buildTerminalMenuSessions(input: {
 
     sessionsById.set(session.target.terminalId, {
       terminalId: session.target.terminalId,
-      cwd: session.state.snapshot?.cwd ?? input.workspaceRoot,
+      cwd: session.state.summary?.cwd ?? input.workspaceRoot,
       status: session.state.status,
+      hasRunningSubprocess: session.state.hasRunningSubprocess,
       updatedAt: session.state.updatedAt,
     });
   }

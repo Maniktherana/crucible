@@ -9,6 +9,7 @@ import {
   shellSnapshotStateAtom,
   type ShellSnapshotState,
 } from "@t3tools/client-runtime";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { useCallback, useMemo, useRef, useSyncExternalStore } from "react";
 
 import { appAtomRegistry } from "./atom-registry";
@@ -17,7 +18,7 @@ export const shellSnapshotManager = createShellSnapshotManager({
   getRegistry: () => appAtomRegistry,
 });
 
-export function useShellSnapshot(environmentId: string | null): ShellSnapshotState {
+export function useShellSnapshot(environmentId: EnvironmentId | null): ShellSnapshotState {
   const targetKey = getShellSnapshotTargetKey({ environmentId });
   const state = useAtomValue(
     targetKey !== null ? shellSnapshotStateAtom(targetKey) : EMPTY_SHELL_SNAPSHOT_ATOM,
@@ -26,13 +27,13 @@ export function useShellSnapshot(environmentId: string | null): ShellSnapshotSta
 }
 
 export function useShellSnapshotStates(
-  environmentIds: ReadonlyArray<string>,
-): Readonly<Record<string, ShellSnapshotState>> {
+  environmentIds: ReadonlyArray<EnvironmentId>,
+): Readonly<Record<EnvironmentId, ShellSnapshotState>> {
   const stableEnvironmentIds = useMemo(
     () => Arr.sort(new Set(environmentIds), Order.String),
     [environmentIds],
   );
-  const snapshotCacheRef = useRef<Readonly<Record<string, ShellSnapshotState>>>({});
+  const snapshotCacheRef = useRef<Readonly<Record<EnvironmentId, ShellSnapshotState>>>({});
 
   const subscribe = useCallback(
     (onStoreChange: () => void) => {
@@ -51,7 +52,7 @@ export function useShellSnapshotStates(
   const getSnapshot = useCallback(() => {
     const previous = snapshotCacheRef.current;
     let hasChanged = Object.keys(previous).length !== stableEnvironmentIds.length;
-    const next: Record<string, ShellSnapshotState> = {};
+    const next: Record<EnvironmentId, ShellSnapshotState> = {};
 
     for (const environmentId of stableEnvironmentIds) {
       const snapshot = shellSnapshotManager.getSnapshot({ environmentId });

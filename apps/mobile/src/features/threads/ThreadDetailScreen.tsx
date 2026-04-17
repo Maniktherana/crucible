@@ -1,5 +1,6 @@
 import type {
   ApprovalRequestId,
+  EnvironmentId,
   ModelSelection,
   OrchestrationThread,
   ProviderApprovalDecision,
@@ -53,7 +54,7 @@ export interface ThreadDetailScreenProps {
   readonly draftAttachments: ReadonlyArray<DraftComposerImageAttachment>;
   readonly connectionStateLabel: "ready" | "connecting" | "reconnecting" | "disconnected" | "idle";
   readonly activeThreadBusy: boolean;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly projectWorkspaceRoot: string | null;
   readonly selectedThreadQueueCount: number;
   readonly serverConfig: T3ServerConfig | null;

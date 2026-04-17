@@ -3,7 +3,7 @@ import { useCallback, useMemo, useState } from "react";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import { pipe } from "effect/Function";
-import type { ProjectScript } from "@t3tools/contracts";
+import { EnvironmentId, type ProjectScript } from "@t3tools/contracts";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
 import { Pressable, ScrollView, Text as RNText, View, useColorScheme } from "react-native";
 import { useThemeColor } from "../../lib/useThemeColor";
@@ -76,7 +76,8 @@ export function ThreadRouteScreen() {
     threadId?: string | string[];
   }>();
   const [drawerVisible, setDrawerVisible] = useState(false);
-  const environmentId = firstRouteParam(params.environmentId);
+  const environmentIdRaw = firstRouteParam(params.environmentId);
+  const environmentId = environmentIdRaw ? EnvironmentId.make(environmentIdRaw) : null;
   const threadId = firstRouteParam(params.threadId);
   const routeEnvironmentRuntime = environmentId
     ? (environmentStateById[environmentId] ?? null)
@@ -93,7 +94,7 @@ export function ThreadRouteScreen() {
 
   /* ─── Git status for native header trigger ───────────────────────── */
   const gitStatus = useGitStatus({
-    environmentId: selectedThread?.environmentId ?? "",
+    environmentId: selectedThread?.environmentId ?? null,
     cwd: selectedThreadCwd,
   });
   const knownTerminalSessions = useKnownTerminalSessions({

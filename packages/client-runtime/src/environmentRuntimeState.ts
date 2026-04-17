@@ -1,4 +1,4 @@
-import type { ServerConfig as T3ServerConfig } from "@t3tools/contracts";
+import type { EnvironmentId, ServerConfig as T3ServerConfig } from "@t3tools/contracts";
 import { Atom, type AtomRegistry } from "effect/unstable/reactivity";
 
 export type EnvironmentConnectionState =
@@ -15,7 +15,7 @@ export interface EnvironmentRuntimeState {
 }
 
 export interface EnvironmentRuntimeTarget {
-  readonly environmentId: string | null;
+  readonly environmentId: EnvironmentId | null;
 }
 
 export const EMPTY_ENVIRONMENT_RUNTIME_STATE = Object.freeze<EnvironmentRuntimeState>({

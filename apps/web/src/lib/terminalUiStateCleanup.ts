@@ -1,23 +1,23 @@
-interface TerminalRetentionThread {
+interface TerminalUiRetentionThread {
   key: string;
   deletedAt: string | null;
   archivedAt: string | null;
 }
 
-interface CollectActiveTerminalThreadIdsInput {
-  snapshotThreads: readonly TerminalRetentionThread[];
+interface CollectActiveTerminalUiThreadKeysInput {
+  snapshotThreads: readonly TerminalUiRetentionThread[];
   draftThreadKeys: Iterable<string>;
 }
 
-export function collectActiveTerminalThreadIds(
-  input: CollectActiveTerminalThreadIdsInput,
+export function collectActiveTerminalUiThreadKeys(
+  input: CollectActiveTerminalUiThreadKeysInput,
 ): Set<string> {
-  const activeThreadIds = new Set<string>();
+  const activeThreadKeys = new Set<string>();
   const snapshotThreadById = new Map(input.snapshotThreads.map((thread) => [thread.key, thread]));
   for (const thread of input.snapshotThreads) {
     if (thread.deletedAt !== null) continue;
     if (thread.archivedAt !== null) continue;
-    activeThreadIds.add(thread.key);
+    activeThreadKeys.add(thread.key);
   }
   for (const draftThreadKey of input.draftThreadKeys) {
     const snapshotThread = snapshotThreadById.get(draftThreadKey);
@@ -27,7 +27,7 @@ export function collectActiveTerminalThreadIds(
     ) {
       continue;
     }
-    activeThreadIds.add(draftThreadKey);
+    activeThreadKeys.add(draftThreadKey);
   }
-  return activeThreadIds;
+  return activeThreadKeys;
 }

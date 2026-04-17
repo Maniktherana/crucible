@@ -1,4 +1,4 @@
-import { DEFAULT_TERMINAL_ID } from "@t3tools/contracts";
+import { DEFAULT_TERMINAL_ID, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text as RNText, View, useColorScheme } from "react-native";
@@ -13,7 +13,7 @@ import {
   useRemoteEnvironmentState,
 } from "../../state/use-remote-environment-registry";
 import {
-  terminalSessionManager,
+  attachTerminalSession,
   useKnownTerminalSessions,
   useTerminalSession,
   useTerminalSessionTarget,
@@ -187,8 +187,12 @@ export function ThreadTerminalRouteScreen() {
   const { selectedThread, selectedThreadProject, selectedEnvironmentConnection } =
     useThreadSelection();
   const selectedThreadDetail = useSelectedThreadDetail();
-  const routeEnvironmentId = firstRouteParam(params.environmentId);
-  const routeThreadId = firstRouteParam(params.threadId);
+  const routeEnvironmentIdRaw = firstRouteParam(params.environmentId);
+  const routeThreadIdRaw = firstRouteParam(params.threadId);
+  const routeEnvironmentId = routeEnvironmentIdRaw
+    ? EnvironmentId.make(routeEnvironmentIdRaw)
+    : null;
+  const routeThreadId = routeThreadIdRaw ? ThreadId.make(routeThreadIdRaw) : null;
   const requestedTerminalId = firstRouteParam(params.terminalId);
   const terminalId = requestedTerminalId ?? DEFAULT_TERMINAL_ID;
   const cachedFontSize = getCachedTerminalFontSize();
@@ -232,13 +236,9 @@ export function ThreadTerminalRouteScreen() {
     terminalId,
   });
   const terminal = useTerminalSession(target);
-  const terminalKey = useMemo(
-    () =>
-      selectedThread
-        ? `${selectedThread.environmentId}:${selectedThread.id}:${terminalId}`
-        : terminalId,
-    [selectedThread, terminalId],
-  );
+  const terminalKey = selectedThread
+    ? `${selectedThread.environmentId}:${selectedThread.id}:${terminalId}`
+    : terminalId;
   const bufferReplayKey = useMemo(
     () => getTerminalBufferReplayKey({ terminalKey, fontSize }),
     [fontSize, terminalKey],
@@ -252,7 +252,7 @@ export function ThreadTerminalRouteScreen() {
     readyReplayKey: readyBufferReplayKey,
   });
   const isRunning = terminal.status === "running" || terminal.status === "starting";
-  const cwd = terminal.snapshot?.cwd ?? selectedThreadProject?.workspaceRoot ?? null;
+  const cwd = terminal.summary?.cwd ?? selectedThreadProject?.workspaceRoot ?? null;
   const hostPlatform = useMemo(
     () => inferHostPlatform(selectedEnvironmentConnection?.environmentLabel ?? null),
     [selectedEnvironmentConnection?.environmentLabel],
@@ -338,6 +338,7 @@ export function ThreadTerminalRouteScreen() {
           terminalId,
           cwd: cwd ?? null,
           status: terminal.status,
+          hasRunningSubprocess: terminal.hasRunningSubprocess,
           updatedAt: terminal.updatedAt,
         },
       }),
@@ -345,20 +346,21 @@ export function ThreadTerminalRouteScreen() {
       cwd,
       knownSessions,
       selectedThreadProject?.workspaceRoot,
+      terminal.hasRunningSubprocess,
       terminal.status,
       terminal.updatedAt,
       terminalId,
     ],
   );
 
-  const openTerminal = useCallback(async () => {
+  const attachTerminal = useCallback(() => {
     if (!selectedThread || !selectedThreadProject?.workspaceRoot) {
-      return;
+      return null;
     }
 
     const client = getEnvironmentClient(selectedThread.environmentId);
     if (!client) {
-      return;
+      return null;
     }
 
     const pendingLaunchTarget = {
@@ -367,6 +369,7 @@ export function ThreadTerminalRouteScreen() {
       terminalId,
     };
     const pendingLaunch = takePendingTerminalLaunch(pendingLaunchTarget);
+    let initialInputSent = false;
 
     try {
       const launchLocation = pendingLaunch
@@ -375,35 +378,38 @@ export function ThreadTerminalRouteScreen() {
             worktreePath: pendingLaunch.worktreePath,
           }
         : resolveTerminalOpenLocation({
-            terminalSnapshot: terminal.snapshot,
-            activeSessionSnapshot: activeKnownSession?.state.snapshot ?? null,
+            terminalLocation: terminal.summary,
+            activeSessionLocation: activeKnownSession?.state.summary ?? null,
             workspaceRoot: selectedThreadProject.workspaceRoot,
             threadShellWorktreePath: selectedThread.worktreePath ?? null,
             threadDetailWorktreePath: selectedThreadDetail?.worktreePath ?? null,
           });
 
-      const snapshot = await client.terminal.open({
-        threadId: selectedThread.id,
-        terminalId,
-        cwd: launchLocation.cwd,
-        worktreePath: launchLocation.worktreePath,
-        cols: lastGridSize.cols,
-        rows: lastGridSize.rows,
-        env: pendingLaunch?.env,
-      });
-
-      terminalSessionManager.syncSnapshot(
-        { environmentId: selectedThread.environmentId },
-        snapshot,
-      );
-
-      if (pendingLaunch?.initialInput) {
-        await client.terminal.write({
+      return attachTerminalSession({
+        environmentId: selectedThread.environmentId,
+        client,
+        terminal: {
           threadId: selectedThread.id,
           terminalId,
-          data: pendingLaunch.initialInput,
-        });
-      }
+          cwd: launchLocation.cwd,
+          worktreePath: launchLocation.worktreePath,
+          cols: lastGridSize.cols,
+          rows: lastGridSize.rows,
+          env: pendingLaunch?.env,
+        },
+        onSnapshot: () => {
+          if (!pendingLaunch?.initialInput || initialInputSent) {
+            return;
+          }
+
+          initialInputSent = true;
+          void client.terminal.write({
+            threadId: selectedThread.id,
+            terminalId,
+            data: pendingLaunch.initialInput,
+          });
+        },
+      });
     } catch (error) {
       if (pendingLaunch) {
         stagePendingTerminalLaunch({
@@ -417,11 +423,11 @@ export function ThreadTerminalRouteScreen() {
   }, [
     lastGridSize.cols,
     lastGridSize.rows,
-    activeKnownSession?.state.snapshot,
+    activeKnownSession?.state.summary,
     selectedThreadDetail?.worktreePath,
     selectedThread,
     selectedThreadProject?.workspaceRoot,
-    terminal.snapshot,
+    terminal.summary,
     terminalId,
   ]);
 
@@ -546,7 +552,7 @@ export function ThreadTerminalRouteScreen() {
       currentTerminalId: terminalId,
       runningTerminalId: runningSession?.target.terminalId ?? null,
       currentTerminalStatus: terminal.status,
-      hasCurrentTerminalHydration: terminal.snapshot !== null || terminal.buffer.length > 0,
+      hasCurrentTerminalHydration: terminal.summary !== null || terminal.buffer.length > 0,
     });
     if (bootstrapAction.kind === "idle" || !selectedThread) {
       return;
@@ -558,18 +564,21 @@ export function ThreadTerminalRouteScreen() {
     }
 
     hasOpenedRef.current = true;
-    void openTerminal().catch(() => {
+    try {
+      return attachTerminal() ?? undefined;
+    } catch {
       hasOpenedRef.current = false;
-    });
+      return;
+    }
   }, [
-    openTerminal,
+    attachTerminal,
     requestedTerminalId,
     router,
     runningSession,
     selectedThread,
     selectedThreadProject?.workspaceRoot,
     terminal.buffer.length,
-    terminal.snapshot,
+    terminal.summary,
     terminal.status,
     terminalId,
     hasMeasuredSurface,

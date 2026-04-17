@@ -1,4 +1,4 @@
-import type { GitStatusResult } from "@t3tools/contracts";
+import { EnvironmentId, type GitStatusResult } from "@t3tools/contracts";
 import { AtomRegistry } from "effect/unstable/reactivity";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -60,9 +60,9 @@ function createMockClient(): {
 const PENDING = { data: null, error: null, cause: null, isPending: true };
 const EMPTY = { data: null, error: null, cause: null, isPending: false };
 
-const TARGET = { environmentId: "env-local", cwd: "/repo" } as const;
-const FRESH_TARGET = { environmentId: "env-local", cwd: "/fresh" } as const;
-const OTHER_ENV_TARGET = { environmentId: "env-remote", cwd: "/repo" } as const;
+const TARGET = { environmentId: EnvironmentId.make("env-local"), cwd: "/repo" } as const;
+const FRESH_TARGET = { environmentId: EnvironmentId.make("env-local"), cwd: "/fresh" } as const;
+const OTHER_ENV_TARGET = { environmentId: EnvironmentId.make("env-remote"), cwd: "/repo" } as const;
 
 /* ─── Tests ─────────────────────────────────────────────────────────── */
 

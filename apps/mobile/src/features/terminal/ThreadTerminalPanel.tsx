@@ -1,17 +1,21 @@
-import { DEFAULT_TERMINAL_ID } from "@t3tools/contracts";
+import { DEFAULT_TERMINAL_ID, type EnvironmentId, type ThreadId } from "@t3tools/contracts";
 import { SymbolView } from "expo-symbols";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
 import { getEnvironmentClient } from "../../state/use-remote-environment-registry";
-import { useTerminalSession, useTerminalSessionTarget } from "../../state/use-terminal-session";
+import {
+  attachTerminalSession,
+  useTerminalSession,
+  useTerminalSessionTarget,
+} from "../../state/use-terminal-session";
 import { TerminalSurface } from "./NativeTerminalSurface";
 import { hasNativeTerminalSurface } from "./nativeTerminalModule";
 
 interface ThreadTerminalPanelProps {
-  readonly environmentId: string;
-  readonly threadId: string;
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
   readonly cwd: string;
   readonly worktreePath: string | null;
   readonly visible: boolean;
@@ -36,31 +40,31 @@ export const ThreadTerminalPanel = memo(function ThreadTerminalPanel(
     cols: DEFAULT_TERMINAL_COLS,
     rows: DEFAULT_TERMINAL_ROWS,
   });
-  const hasOpenedRef = useRef(false);
 
-  const terminalKey = useMemo(
-    () => `${props.environmentId}:${props.threadId}:${terminalId}`,
-    [props.environmentId, props.threadId, terminalId],
-  );
+  const terminalKey = `${props.environmentId}:${props.threadId}:${terminalId}`;
   const isRunning = terminal.status === "running" || terminal.status === "starting";
 
   useEffect(() => {
-    hasOpenedRef.current = false;
-  }, [terminalKey]);
+    if (!props.visible) {
+      return;
+    }
 
-  const openTerminal = useCallback(async () => {
     const client = getEnvironmentClient(props.environmentId);
     if (!client) {
       return;
     }
 
-    await client.terminal.open({
-      threadId: props.threadId,
-      terminalId,
-      cwd: props.cwd,
-      worktreePath: props.worktreePath,
-      cols: lastGridSize.cols,
-      rows: lastGridSize.rows,
+    return attachTerminalSession({
+      environmentId: props.environmentId,
+      client,
+      terminal: {
+        threadId: props.threadId,
+        terminalId,
+        cwd: props.cwd,
+        worktreePath: props.worktreePath,
+        cols: lastGridSize.cols,
+        rows: lastGridSize.rows,
+      },
     });
   }, [
     lastGridSize.cols,
@@ -69,19 +73,9 @@ export const ThreadTerminalPanel = memo(function ThreadTerminalPanel(
     props.environmentId,
     props.threadId,
     props.worktreePath,
+    props.visible,
     terminalId,
   ]);
-
-  useEffect(() => {
-    if (!props.visible || hasOpenedRef.current || terminal.status !== "closed") {
-      return;
-    }
-
-    hasOpenedRef.current = true;
-    void openTerminal().catch(() => {
-      hasOpenedRef.current = false;
-    });
-  }, [openTerminal, props.visible, terminal.status]);
 
   const handleInput = useCallback(
     (data: string) => {

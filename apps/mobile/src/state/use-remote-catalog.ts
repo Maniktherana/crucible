@@ -51,7 +51,9 @@ function deriveOverallConnectionState(
 export function useRemoteCatalog() {
   const { connectedEnvironments, connectionState } = useRemoteConnectionStatus();
   const { environmentStateById, savedConnectionsById } = useRemoteEnvironmentState();
-  const shellSnapshotStates = useShellSnapshotStates(Object.keys(savedConnectionsById));
+  const shellSnapshotStates = useShellSnapshotStates(
+    Object.values(savedConnectionsById).map((connection) => connection.environmentId),
+  );
 
   const projects = useMemo(
     () =>

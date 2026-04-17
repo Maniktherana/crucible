@@ -23,16 +23,17 @@ import { appAtomRegistry } from "./atom-registry";
 import { type ConnectedEnvironmentSummary, type EnvironmentSession } from "./remote-runtime-types";
 import { environmentRuntimeManager, useEnvironmentRuntimeStates } from "./use-environment-runtime";
 import { shellSnapshotManager } from "./use-shell-snapshot";
-import { terminalSessionManager } from "./use-terminal-session";
+import { subscribeTerminalMetadata, terminalSessionManager } from "./use-terminal-session";
 
-const environmentSessions = new Map<string, EnvironmentSession>();
+const environmentSessions = new Map<EnvironmentId, EnvironmentSession>();
 const environmentConnectionListeners = new Set<() => void>();
+const terminalMetadataUnsubscribers = new Map<EnvironmentId, () => void>();
 
 interface RemoteEnvironmentLocalState {
   readonly isLoadingSavedConnection: boolean;
   readonly connectionPairingUrl: string;
   readonly pendingConnectionError: string | null;
-  readonly savedConnectionsById: Record<string, SavedRemoteConnection>;
+  readonly savedConnectionsById: Record<EnvironmentId, SavedRemoteConnection>;
 }
 
 const isLoadingSavedConnectionAtom = Atom.make(true).pipe(
@@ -50,7 +51,7 @@ const pendingConnectionErrorAtom = Atom.make<string | null>(null).pipe(
   Atom.withLabel("mobile:pending-connection-error"),
 );
 
-const savedConnectionsByIdAtom = Atom.make<Record<string, SavedRemoteConnection>>({}).pipe(
+const savedConnectionsByIdAtom = Atom.make<Record<EnvironmentId, SavedRemoteConnection>>({}).pipe(
   Atom.keepAlive,
   Atom.withLabel("mobile:saved-connections"),
 );
@@ -59,7 +60,7 @@ function notifyEnvironmentConnectionListeners() {
   for (const listener of environmentConnectionListeners) listener();
 }
 
-function getSavedConnectionsById(): Record<string, SavedRemoteConnection> {
+function getSavedConnectionsById(): Record<EnvironmentId, SavedRemoteConnection> {
   return appAtomRegistry.get(savedConnectionsByIdAtom);
 }
 
@@ -83,7 +84,7 @@ function clearPendingConnectionError(): void {
   appAtomRegistry.set(pendingConnectionErrorAtom, null);
 }
 
-function replaceSavedConnections(connections: Record<string, SavedRemoteConnection>): void {
+function replaceSavedConnections(connections: Record<EnvironmentId, SavedRemoteConnection>): void {
   appAtomRegistry.set(savedConnectionsByIdAtom, connections);
 }
 
@@ -95,7 +96,7 @@ function upsertSavedConnection(connection: SavedRemoteConnection): void {
   });
 }
 
-function removeSavedConnection(environmentId: string): void {
+function removeSavedConnection(environmentId: EnvironmentId): void {
   const current = appAtomRegistry.get(savedConnectionsByIdAtom);
   const next = { ...current };
   delete next[environmentId];
@@ -131,7 +132,7 @@ export function subscribeEnvironmentConnections(listener: () => void): () => voi
 }
 
 function setEnvironmentConnectionStatus(
-  environmentId: string,
+  environmentId: EnvironmentId,
   state: ConnectedEnvironmentSummary["connectionState"],
   error?: string | null,
 ) {
@@ -142,18 +143,20 @@ function setEnvironmentConnectionStatus(
   }));
 }
 
-export function getEnvironmentClient(environmentId: string) {
+export function getEnvironmentClient(environmentId: EnvironmentId) {
   return environmentSessions.get(environmentId)?.client ?? null;
 }
 
 export async function disconnectEnvironment(
-  environmentId: string,
+  environmentId: EnvironmentId,
   options?: { readonly removeSaved?: boolean },
 ) {
   const session = environmentSessions.get(environmentId);
   environmentSessions.delete(environmentId);
   notifyEnvironmentConnectionListeners();
   await session?.connection.dispose();
+  terminalMetadataUnsubscribers.get(environmentId)?.();
+  terminalMetadataUnsubscribers.delete(environmentId);
   shellSnapshotManager.invalidate({ environmentId });
   terminalSessionManager.invalidateEnvironment(environmentId);
   environmentRuntimeManager.invalidate({ environmentId });
@@ -246,9 +249,6 @@ export async function connectSavedEnvironment(
     onShellResubscribe: (environmentId) => {
       shellSnapshotManager.markPending({ environmentId });
     },
-    applyTerminalEvent: (event, environmentId) => {
-      terminalSessionManager.applyEvent({ environmentId }, event);
-    },
     onConfigSnapshot: (serverConfig) => {
       environmentRuntimeManager.patch({ environmentId: connection.environmentId }, (runtime) => ({
         ...runtime,
@@ -261,6 +261,13 @@ export async function connectSavedEnvironment(
     client,
     connection: environmentConnection,
   });
+  terminalMetadataUnsubscribers.set(
+    connection.environmentId,
+    subscribeTerminalMetadata({
+      environmentId: connection.environmentId,
+      client,
+    }),
+  );
   notifyEnvironmentConnectionListeners();
 
   try {
@@ -335,6 +342,10 @@ export function useRemoteEnvironmentBootstrap() {
         void session.connection.dispose();
       }
       environmentSessions.clear();
+      for (const unsubscribe of terminalMetadataUnsubscribers.values()) {
+        unsubscribe();
+      }
+      terminalMetadataUnsubscribers.clear();
       environmentRuntimeManager.invalidate();
       shellSnapshotManager.invalidate();
       terminalSessionManager.invalidate();
@@ -345,7 +356,9 @@ export function useRemoteEnvironmentBootstrap() {
 
 export function useRemoteEnvironmentState() {
   const state = useRemoteEnvironmentLocalState();
-  const environmentStateById = useEnvironmentRuntimeStates(Object.keys(state.savedConnectionsById));
+  const environmentStateById = useEnvironmentRuntimeStates(
+    Object.values(state.savedConnectionsById).map((connection) => connection.environmentId),
+  );
 
   return useMemo(
     () => ({
@@ -427,7 +440,7 @@ export function useRemoteConnections() {
 
   const onUpdateEnvironment = useCallback(
     async (
-      environmentId: string,
+      environmentId: EnvironmentId,
       updates: { readonly label: string; readonly displayUrl: string },
     ) => {
       const connection = getSavedConnectionsById()[environmentId];
@@ -447,7 +460,7 @@ export function useRemoteConnections() {
     [],
   );
 
-  const onReconnectEnvironment = useCallback((environmentId: string) => {
+  const onReconnectEnvironment = useCallback((environmentId: EnvironmentId) => {
     const connection = getSavedConnectionsById()[environmentId];
     if (!connection) {
       return;
@@ -455,7 +468,7 @@ export function useRemoteConnections() {
     void connectSavedEnvironment(connection, { persist: false });
   }, []);
 
-  const onRemoveEnvironmentPress = useCallback((environmentId: string) => {
+  const onRemoveEnvironmentPress = useCallback((environmentId: EnvironmentId) => {
     const connection = getSavedConnectionsById()[environmentId];
     if (!connection) {
       return;

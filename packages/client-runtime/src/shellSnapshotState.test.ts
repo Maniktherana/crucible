@@ -1,7 +1,12 @@
 import { AtomRegistry } from "effect/unstable/reactivity";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ProjectId, ThreadId, type OrchestrationShellSnapshot } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ThreadId,
+  type OrchestrationShellSnapshot,
+} from "@t3tools/contracts";
 
 import { createShellSnapshotManager } from "./shellSnapshotState.ts";
 
@@ -50,7 +55,7 @@ const BASE_SNAPSHOT: OrchestrationShellSnapshot = {
   ],
 };
 
-const TARGET = { environmentId: "env-local" } as const;
+const TARGET = { environmentId: EnvironmentId.make("env-local") } as const;
 
 describe("createShellSnapshotManager", () => {
   afterEach(() => {

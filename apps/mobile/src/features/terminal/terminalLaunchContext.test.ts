@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 
 import {
   peekPendingTerminalLaunch,
@@ -32,8 +33,8 @@ describe("resolveTerminalOpenLocation", () => {
   it("uses the thread detail worktree path before the workspace root for a fresh mobile open", () => {
     expect(
       resolveTerminalOpenLocation({
-        terminalSnapshot: null,
-        activeSessionSnapshot: null,
+        terminalLocation: null,
+        activeSessionLocation: null,
         workspaceRoot: "/repo/root",
         threadShellWorktreePath: null,
         threadDetailWorktreePath: "/repo/worktrees/feature",
@@ -47,8 +48,8 @@ describe("resolveTerminalOpenLocation", () => {
   it("preserves the running terminal snapshot cwd when attaching to an existing session", () => {
     expect(
       resolveTerminalOpenLocation({
-        terminalSnapshot: null,
-        activeSessionSnapshot: {
+        terminalLocation: null,
+        activeSessionLocation: {
           cwd: "/repo/worktrees/feature",
           worktreePath: "/repo/worktrees/feature",
         },
@@ -66,8 +67,8 @@ describe("resolveTerminalOpenLocation", () => {
 describe("pending terminal launches", () => {
   it("stages and consumes launch details for a specific terminal target", () => {
     const target = {
-      environmentId: "env-1",
-      threadId: "thread-1",
+      environmentId: EnvironmentId.make("env-1"),
+      threadId: ThreadId.make("thread-1"),
       terminalId: "term-2",
     };
 
@@ -98,13 +99,13 @@ describe("pending terminal launches", () => {
 
   it("keeps pending launches isolated per terminal target", () => {
     const primaryTarget = {
-      environmentId: "env-1",
-      threadId: "thread-1",
+      environmentId: EnvironmentId.make("env-1"),
+      threadId: ThreadId.make("thread-1"),
       terminalId: "term-2",
     };
     const otherTarget = {
-      environmentId: "env-1",
-      threadId: "thread-1",
+      environmentId: EnvironmentId.make("env-1"),
+      threadId: ThreadId.make("thread-1"),
       terminalId: "term-3",
     };
 

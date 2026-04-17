@@ -1,10 +1,15 @@
-import type { GitBranch, GitListBranchesInput, GitListBranchesResult } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  GitBranch,
+  GitListBranchesInput,
+  GitListBranchesResult,
+} from "@t3tools/contracts";
 import { Atom, type AtomRegistry } from "effect/unstable/reactivity";
 
 import type { WsRpcClient } from "./wsRpcClient.ts";
 
 export interface GitBranchTarget {
-  readonly environmentId: string | null;
+  readonly environmentId: EnvironmentId | null;
   readonly cwd: string | null;
   readonly query?: string | null;
 }
@@ -76,7 +81,7 @@ function mergeBranches(
 
 export interface GitBranchManagerConfig {
   readonly getRegistry: () => AtomRegistry.AtomRegistry;
-  readonly getClient: (environmentId: string) => GitBranchClient | null;
+  readonly getClient: (environmentId: EnvironmentId) => GitBranchClient | null;
 }
 
 export function createGitBranchManager(config: GitBranchManagerConfig) {

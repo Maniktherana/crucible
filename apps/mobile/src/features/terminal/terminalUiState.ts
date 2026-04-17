@@ -1,3 +1,5 @@
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+
 import { DEFAULT_TERMINAL_FONT_SIZE, normalizeTerminalFontSize } from "./terminalPreferences";
 
 export interface TerminalGridSize {
@@ -6,8 +8,8 @@ export interface TerminalGridSize {
 }
 
 export interface TerminalUiStateTarget {
-  readonly environmentId: string;
-  readonly threadId: string;
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
   readonly terminalId: string;
 }
 

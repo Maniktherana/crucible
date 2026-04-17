@@ -56,12 +56,13 @@ export interface WsRpcClient {
   readonly reconnect: () => Promise<void>;
   readonly terminal: {
     readonly open: RpcUnaryMethod<typeof WS_METHODS.terminalOpen>;
+    readonly attach: RpcInputStreamMethod<typeof WS_METHODS.terminalAttach>;
     readonly write: RpcUnaryMethod<typeof WS_METHODS.terminalWrite>;
     readonly resize: RpcUnaryMethod<typeof WS_METHODS.terminalResize>;
     readonly clear: RpcUnaryMethod<typeof WS_METHODS.terminalClear>;
     readonly restart: RpcUnaryMethod<typeof WS_METHODS.terminalRestart>;
     readonly close: RpcUnaryMethod<typeof WS_METHODS.terminalClose>;
-    readonly onEvent: RpcStreamMethod<typeof WS_METHODS.subscribeTerminalEvents>;
+    readonly onMetadata: RpcStreamMethod<typeof WS_METHODS.subscribeTerminalMetadata>;
   };
   readonly projects: {
     readonly searchEntries: RpcUnaryMethod<typeof WS_METHODS.projectsSearchEntries>;
@@ -127,14 +128,20 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
     reconnect: () => transport.reconnect(),
     terminal: {
       open: (input) => transport.request((client) => client[WS_METHODS.terminalOpen](input)),
+      attach: (input, listener, options) =>
+        transport.subscribe(
+          (client) => client[WS_METHODS.terminalAttach](input),
+          listener,
+          options,
+        ),
       write: (input) => transport.request((client) => client[WS_METHODS.terminalWrite](input)),
       resize: (input) => transport.request((client) => client[WS_METHODS.terminalResize](input)),
       clear: (input) => transport.request((client) => client[WS_METHODS.terminalClear](input)),
       restart: (input) => transport.request((client) => client[WS_METHODS.terminalRestart](input)),
       close: (input) => transport.request((client) => client[WS_METHODS.terminalClose](input)),
-      onEvent: (listener, options) =>
+      onMetadata: (listener, options) =>
         transport.subscribe(
-          (client) => client[WS_METHODS.subscribeTerminalEvents]({}),
+          (client) => client[WS_METHODS.subscribeTerminalMetadata]({}),
           listener,
           options,
         ),

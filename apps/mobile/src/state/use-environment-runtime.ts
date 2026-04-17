@@ -7,6 +7,7 @@ import {
   getEnvironmentRuntimeTargetKey,
   type EnvironmentRuntimeState,
 } from "@t3tools/client-runtime";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { useCallback, useMemo, useRef, useSyncExternalStore } from "react";
 
 import { appAtomRegistry } from "./atom-registry";
@@ -17,7 +18,9 @@ export const environmentRuntimeManager = createEnvironmentRuntimeManager({
   getRegistry: () => appAtomRegistry,
 });
 
-export function useEnvironmentRuntime(environmentId: string | null): EnvironmentRuntimeState {
+export function useEnvironmentRuntime(
+  environmentId: EnvironmentId | null,
+): EnvironmentRuntimeState {
   const targetKey = getEnvironmentRuntimeTargetKey({ environmentId });
   const state = useAtomValue(
     targetKey !== null ? environmentRuntimeStateAtom(targetKey) : EMPTY_ENVIRONMENT_RUNTIME_ATOM,
@@ -26,13 +29,13 @@ export function useEnvironmentRuntime(environmentId: string | null): Environment
 }
 
 export function useEnvironmentRuntimeStates(
-  environmentIds: ReadonlyArray<string>,
-): Readonly<Record<string, EnvironmentRuntimeState>> {
+  environmentIds: ReadonlyArray<EnvironmentId>,
+): Readonly<Record<EnvironmentId, EnvironmentRuntimeState>> {
   const stableEnvironmentIds = useMemo(
     () => Arr.sort(new Set(environmentIds), Order.String),
     [environmentIds],
   );
-  const snapshotCacheRef = useRef<Readonly<Record<string, EnvironmentRuntimeState>>>({});
+  const snapshotCacheRef = useRef<Readonly<Record<EnvironmentId, EnvironmentRuntimeState>>>({});
 
   const subscribe = useCallback(
     (onStoreChange: () => void) => {
@@ -51,7 +54,7 @@ export function useEnvironmentRuntimeStates(
   const getSnapshot = useCallback(() => {
     const previous = snapshotCacheRef.current;
     let hasChanged = Object.keys(previous).length !== stableEnvironmentIds.length;
-    const next: Record<string, EnvironmentRuntimeState> = {};
+    const next: Record<EnvironmentId, EnvironmentRuntimeState> = {};
 
     for (const environmentId of stableEnvironmentIds) {
       const snapshot = environmentRuntimeManager.getSnapshot({ environmentId });

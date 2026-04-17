@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   EventId,
+  EnvironmentId,
   MessageId,
   ProjectId,
   ThreadId,
@@ -56,7 +57,10 @@ const BASE_THREAD: OrchestrationThread = {
   session: null,
 };
 
-const TARGET = { environmentId: "env-local", threadId: "thread-1" } as const;
+const TARGET = {
+  environmentId: EnvironmentId.make("env-local"),
+  threadId: ThreadId.make("thread-1"),
+} as const;
 
 function createMockClient(): {
   client: ThreadDetailClient;

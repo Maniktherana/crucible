@@ -36,7 +36,7 @@ export function useSelectedThreadCommands(input: {
   const onRefresh = useCallback(async () => {
     const targets = selectedThread
       ? [selectedThread.environmentId]
-      : Object.keys(savedConnectionsById);
+      : Object.values(savedConnectionsById).map((connection) => connection.environmentId);
 
     await Promise.all(
       targets.map(async (environmentId) => {

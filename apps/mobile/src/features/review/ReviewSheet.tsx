@@ -1,4 +1,4 @@
-import { ThreadId, type OrchestrationCheckpointSummary } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId, type OrchestrationCheckpointSummary } from "@t3tools/contracts";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import Stack from "expo-router/stack";
 import { SymbolView } from "expo-symbols";
@@ -440,8 +440,8 @@ export function ReviewSheet() {
   const headerMuted = String(useThemeColor("--color-foreground-muted"));
   const headerIcon = String(useThemeColor("--color-icon"));
   const { environmentId, threadId } = useLocalSearchParams<{
-    environmentId: string;
-    threadId: string;
+    environmentId: EnvironmentId;
+    threadId: ThreadId;
   }>();
   const { draftMessage } = useThreadDraftForThread({ environmentId, threadId });
   const reviewCache = useReviewCacheForThread({ environmentId, threadId });
@@ -641,7 +641,7 @@ export function ReviewSheet() {
     [reviewListItems, viewportWidth],
   );
   const loadGitDiffs = useCallback(async () => {
-    if (!environmentId || !cwd) {
+    if (!cwd) {
       return;
     }
 
@@ -667,7 +667,7 @@ export function ReviewSheet() {
 
   const loadTurnDiff = useCallback(
     async (checkpoint: OrchestrationCheckpointSummary, force = false) => {
-      if (!environmentId || !threadId) {
+      if (!threadId) {
         return;
       }
 

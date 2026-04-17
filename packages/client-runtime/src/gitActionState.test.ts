@@ -1,11 +1,12 @@
-import type {
-  GitActionProgressEvent,
-  GitCreateBranchResult,
-  GitCreateWorktreeResult,
-  GitCheckoutResult,
-  GitPullResult,
-  GitRunStackedActionResult,
-  GitStatusResult,
+import {
+  EnvironmentId,
+  type GitActionProgressEvent,
+  type GitCreateBranchResult,
+  type GitCreateWorktreeResult,
+  type GitCheckoutResult,
+  type GitPullResult,
+  type GitRunStackedActionResult,
+  type GitStatusResult,
 } from "@t3tools/contracts";
 import { AtomRegistry } from "effect/unstable/reactivity";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -33,7 +34,7 @@ function createDeferred<T>() {
   return { promise, resolve, reject };
 }
 
-const TARGET = { environmentId: "env-local", cwd: "/repo" } as const;
+const TARGET = { environmentId: EnvironmentId.make("env-local"), cwd: "/repo" } as const;
 
 const BASE_STATUS: GitStatusResult = {
   isRepo: true,

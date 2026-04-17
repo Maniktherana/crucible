@@ -36,7 +36,7 @@ export function GitOverviewSheet() {
   const borderColor = useThemeColor("--color-border");
 
   const gitStatus = useGitStatus({
-    environmentId: selectedThread?.environmentId ?? "",
+    environmentId: selectedThread?.environmentId ?? null,
     cwd: selectedThreadCwd,
   });
 

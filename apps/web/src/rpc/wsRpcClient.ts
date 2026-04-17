@@ -22,14 +22,20 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
     },
     terminal: {
       open: (input) => transport.request((client) => client[WS_METHODS.terminalOpen](input)),
+      attach: (input, listener, options) =>
+        transport.subscribe(
+          (client) => client[WS_METHODS.terminalAttach](input),
+          listener,
+          options,
+        ),
       write: (input) => transport.request((client) => client[WS_METHODS.terminalWrite](input)),
       resize: (input) => transport.request((client) => client[WS_METHODS.terminalResize](input)),
       clear: (input) => transport.request((client) => client[WS_METHODS.terminalClear](input)),
       restart: (input) => transport.request((client) => client[WS_METHODS.terminalRestart](input)),
       close: (input) => transport.request((client) => client[WS_METHODS.terminalClose](input)),
-      onEvent: (listener, options) =>
+      onMetadata: (listener, options) =>
         transport.subscribe(
-          (client) => client[WS_METHODS.subscribeTerminalEvents]({}),
+          (client) => client[WS_METHODS.subscribeTerminalMetadata]({}),
           listener,
           options,
         ),

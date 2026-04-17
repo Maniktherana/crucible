@@ -28,7 +28,7 @@ export function GitCommitSheet() {
   const foregroundColor = useThemeColor("--color-foreground");
 
   const gitStatus = useGitStatus({
-    environmentId: selectedThread?.environmentId ?? "",
+    environmentId: selectedThread?.environmentId ?? null,
     cwd: selectedThreadCwd,
   });
 

@@ -17,7 +17,7 @@ import {
   selectThreadsForEnvironment,
   useStore,
 } from "../store";
-import { useTerminalStateStore } from "../terminalStateStore";
+import { useTerminalUiStateStore } from "../terminalUiStateStore";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
 import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
 import { toastManager } from "../components/ui/toast";
@@ -30,7 +30,7 @@ export function useThreadActions() {
   const clearProjectDraftThreadById = useComposerDraftStore(
     (store) => store.clearProjectDraftThreadById,
   );
-  const clearTerminalState = useTerminalStateStore((state) => state.clearTerminalState);
+  const clearTerminalUiState = useTerminalUiStateStore((state) => state.clearTerminalUiState);
   const router = useRouter();
   const { handleNewThread } = useNewThreadHandler();
   // Keep a ref so archiveThread can call handleNewThread without appearing in
@@ -180,7 +180,7 @@ export function useThreadActions() {
         scopeProjectRef(threadRef.environmentId, thread.projectId),
         threadRef,
       );
-      clearTerminalState(threadRef);
+      clearTerminalUiState(threadRef);
 
       if (shouldNavigateToFallback) {
         if (fallbackThreadId) {
@@ -235,7 +235,7 @@ export function useThreadActions() {
     [
       clearComposerDraftForThread,
       clearProjectDraftThreadById,
-      clearTerminalState,
+      clearTerminalUiState,
       getCurrentRouteThreadRef,
       router,
       queryClient,

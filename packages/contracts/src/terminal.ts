@@ -44,6 +44,16 @@ export const TerminalOpenInput = Schema.Struct({
 });
 export type TerminalOpenInput = Schema.Codec.Encoded<typeof TerminalOpenInput>;
 
+export const TerminalAttachInput = Schema.Struct({
+  ...TerminalSessionInput.fields,
+  cwd: Schema.optional(TrimmedNonEmptyStringSchema),
+  worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
+  cols: Schema.optional(TerminalColsSchema),
+  rows: Schema.optional(TerminalRowsSchema),
+  env: Schema.optional(TerminalEnvSchema),
+});
+export type TerminalAttachInput = Schema.Codec.Encoded<typeof TerminalAttachInput>;
+
 export const TerminalWriteInput = Schema.Struct({
   ...TerminalSessionInput.fields,
   data: Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(65_536)),
@@ -91,13 +101,51 @@ export const TerminalSessionSnapshot = Schema.Struct({
   exitCode: Schema.NullOr(Schema.Int),
   exitSignal: Schema.NullOr(Schema.Int),
   updatedAt: Schema.String,
+  sequence: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
 });
 export type TerminalSessionSnapshot = typeof TerminalSessionSnapshot.Type;
+
+export const TerminalSummary = Schema.Struct({
+  threadId: Schema.String.check(Schema.isNonEmpty()),
+  terminalId: Schema.String.check(Schema.isNonEmpty()),
+  cwd: Schema.String.check(Schema.isNonEmpty()),
+  worktreePath: Schema.NullOr(TrimmedNonEmptyStringSchema),
+  status: TerminalSessionStatus,
+  pid: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
+  exitCode: Schema.NullOr(Schema.Int),
+  exitSignal: Schema.NullOr(Schema.Int),
+  hasRunningSubprocess: Schema.Boolean,
+  updatedAt: Schema.String,
+});
+export type TerminalSummary = typeof TerminalSummary.Type;
+
+const TerminalMetadataSnapshotEvent = Schema.Struct({
+  type: Schema.Literal("snapshot"),
+  terminals: Schema.Array(TerminalSummary),
+});
+
+const TerminalMetadataUpsertEvent = Schema.Struct({
+  type: Schema.Literal("upsert"),
+  terminal: TerminalSummary,
+});
+
+const TerminalMetadataRemoveEvent = Schema.Struct({
+  type: Schema.Literal("remove"),
+  threadId: Schema.String.check(Schema.isNonEmpty()),
+  terminalId: Schema.String.check(Schema.isNonEmpty()),
+});
+
+export const TerminalMetadataStreamEvent = Schema.Union([
+  TerminalMetadataSnapshotEvent,
+  TerminalMetadataUpsertEvent,
+  TerminalMetadataRemoveEvent,
+]);
+export type TerminalMetadataStreamEvent = typeof TerminalMetadataStreamEvent.Type;
 
 const TerminalEventBaseSchema = Schema.Struct({
   threadId: Schema.String.check(Schema.isNonEmpty()),
   terminalId: Schema.String.check(Schema.isNonEmpty()),
-  createdAt: Schema.String,
+  sequence: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
 });
 
 const TerminalStartedEvent = Schema.Struct({
@@ -158,6 +206,23 @@ export const TerminalEvent = Schema.Union([
   TerminalActivityEvent,
 ]);
 export type TerminalEvent = typeof TerminalEvent.Type;
+
+const TerminalAttachSnapshotEvent = Schema.Struct({
+  type: Schema.Literal("snapshot"),
+  snapshot: TerminalSessionSnapshot,
+});
+
+export const TerminalAttachStreamEvent = Schema.Union([
+  TerminalAttachSnapshotEvent,
+  TerminalOutputEvent,
+  TerminalExitedEvent,
+  TerminalClosedEvent,
+  TerminalErrorEvent,
+  TerminalClearedEvent,
+  TerminalRestartedEvent,
+  TerminalActivityEvent,
+]);
+export type TerminalAttachStreamEvent = typeof TerminalAttachStreamEvent.Type;
 
 export class TerminalCwdError extends Schema.TaggedErrorClass<TerminalCwdError>()(
   "TerminalCwdError",

@@ -1,4 +1,5 @@
 import { SymbolView } from "expo-symbols";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { useCallback, useState } from "react";
 import { Pressable, View } from "react-native";
 import Animated, { FadeIn, FadeOut, LinearTransition } from "react-native-reanimated";
@@ -12,10 +13,10 @@ export function ConnectionEnvironmentRow(props: {
   readonly environment: ConnectedEnvironmentSummary;
   readonly expanded: boolean;
   readonly onToggle: () => void;
-  readonly onReconnect: (environmentId: string) => void;
-  readonly onRemove: (environmentId: string) => void;
+  readonly onReconnect: (environmentId: EnvironmentId) => void;
+  readonly onRemove: (environmentId: EnvironmentId) => void;
   readonly onUpdate: (
-    environmentId: string,
+    environmentId: EnvironmentId,
     updates: { readonly label: string; readonly displayUrl: string },
   ) => void;
 }) {

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 
 import {
   cacheTerminalFontSize,
@@ -23,13 +24,13 @@ describe("terminalUiState", () => {
 
   it("stores terminal grid sizes per terminal target", () => {
     const primaryTarget = {
-      environmentId: "env-1",
-      threadId: "thread-1",
+      environmentId: EnvironmentId.make("env-1"),
+      threadId: ThreadId.make("thread-1"),
       terminalId: "default",
     };
     const otherTarget = {
-      environmentId: "env-1",
-      threadId: "thread-1",
+      environmentId: EnvironmentId.make("env-1"),
+      threadId: ThreadId.make("thread-1"),
       terminalId: "term-2",
     };
 

@@ -1,11 +1,13 @@
-interface TerminalSnapshotLike {
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+
+interface TerminalLocationLike {
   readonly cwd: string;
   readonly worktreePath: string | null;
 }
 
 interface PendingTerminalLaunchTarget {
-  readonly environmentId: string;
-  readonly threadId: string;
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
   readonly terminalId: string;
 }
 
@@ -60,8 +62,8 @@ export function resolvePreferredThreadWorktreePath(input: {
 }
 
 export function resolveTerminalOpenLocation(input: {
-  readonly terminalSnapshot: TerminalSnapshotLike | null;
-  readonly activeSessionSnapshot: TerminalSnapshotLike | null;
+  readonly terminalLocation: TerminalLocationLike | null;
+  readonly activeSessionLocation: TerminalLocationLike | null;
   readonly workspaceRoot: string;
   readonly threadShellWorktreePath: string | null;
   readonly threadDetailWorktreePath: string | null;
@@ -76,13 +78,13 @@ export function resolveTerminalOpenLocation(input: {
 
   return {
     cwd:
-      input.terminalSnapshot?.cwd ??
-      input.activeSessionSnapshot?.cwd ??
+      input.terminalLocation?.cwd ??
+      input.activeSessionLocation?.cwd ??
       preferredThreadWorktreePath ??
       input.workspaceRoot,
     worktreePath:
-      input.terminalSnapshot?.worktreePath ??
-      input.activeSessionSnapshot?.worktreePath ??
+      input.terminalLocation?.worktreePath ??
+      input.activeSessionLocation?.worktreePath ??
       preferredThreadWorktreePath,
   };
 }

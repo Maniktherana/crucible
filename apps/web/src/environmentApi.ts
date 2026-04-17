@@ -9,12 +9,14 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
   return {
     terminal: {
       open: (input) => rpcClient.terminal.open(input as never),
+      attach: (input, callback, options) =>
+        rpcClient.terminal.attach(input as never, callback, options),
       write: (input) => rpcClient.terminal.write(input as never),
       resize: (input) => rpcClient.terminal.resize(input as never),
       clear: (input) => rpcClient.terminal.clear(input as never),
       restart: (input) => rpcClient.terminal.restart(input as never),
       close: (input) => rpcClient.terminal.close(input as never),
-      onEvent: (callback) => rpcClient.terminal.onEvent(callback),
+      onMetadata: (callback, options) => rpcClient.terminal.onMetadata(callback, options),
     },
     projects: {
       searchEntries: rpcClient.projects.searchEntries,

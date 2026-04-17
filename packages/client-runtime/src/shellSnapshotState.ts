@@ -1,4 +1,8 @@
-import type { OrchestrationShellSnapshot, OrchestrationShellStreamEvent } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  OrchestrationShellSnapshot,
+  OrchestrationShellStreamEvent,
+} from "@t3tools/contracts";
 import { Atom, type AtomRegistry } from "effect/unstable/reactivity";
 
 import { applyShellStreamEvent } from "./shellSnapshotReducer.ts";
@@ -10,7 +14,7 @@ export interface ShellSnapshotState {
 }
 
 export interface ShellSnapshotTarget {
-  readonly environmentId: string | null;
+  readonly environmentId: EnvironmentId | null;
 }
 
 export const EMPTY_SHELL_SNAPSHOT_STATE = Object.freeze<ShellSnapshotState>({

@@ -5,6 +5,7 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  type EnvironmentId,
   MessageId,
   ThreadId,
   type GitBranch,
@@ -29,8 +30,10 @@ function useRefreshRemoteData() {
   const { savedConnectionsById } = useRemoteEnvironmentState();
 
   return useCallback(
-    async (environmentIds?: ReadonlyArray<string>) => {
-      const targets = environmentIds ?? Object.keys(savedConnectionsById);
+    async (environmentIds?: ReadonlyArray<EnvironmentId>) => {
+      const targets =
+        environmentIds ??
+        Object.values(savedConnectionsById).map((connection) => connection.environmentId);
 
       await Promise.all(
         targets.map(async (environmentId) => {

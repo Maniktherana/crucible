@@ -1,6 +1,7 @@
 import { isLiquidGlassSupported, LiquidGlassView } from "@callstack/liquid-glass";
 import { MenuView } from "@react-native-menu/menu";
 import type {
+  EnvironmentId,
   ModelSelection,
   OrchestrationThread,
   ProviderInteractionMode,
@@ -67,7 +68,7 @@ export interface ThreadComposerProps {
   readonly serverConfig: T3ServerConfig | null;
   readonly queueCount: number;
   readonly activeThreadBusy: boolean;
-  readonly environmentId: string;
+  readonly environmentId: EnvironmentId;
   readonly projectCwd: string | null;
   readonly onChangeDraftMessage: (value: string) => void;
   readonly onPickDraftImages: () => Promise<void>;

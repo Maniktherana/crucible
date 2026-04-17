@@ -1,5 +1,6 @@
 import { useLocalSearchParams } from "expo-router";
 import { useMemo } from "react";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 
 import { EnvironmentScopedThreadShell } from "@t3tools/client-runtime";
 import { EnvironmentScopedProjectShell } from "@t3tools/client-runtime";
@@ -15,7 +16,7 @@ function firstRouteParam(value: string | string[] | undefined): string | null {
 }
 
 function deriveSelectedThread(
-  selectedThreadRef: { readonly environmentId: string; readonly threadId: string } | null,
+  selectedThreadRef: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId } | null,
   threads: ReadonlyArray<EnvironmentScopedThreadShell>,
 ): EnvironmentScopedThreadShell | null {
   if (!selectedThreadRef) {
@@ -62,7 +63,10 @@ export function useThreadSelection() {
       return null;
     }
 
-    return { environmentId, threadId };
+    return {
+      environmentId: EnvironmentId.make(environmentId),
+      threadId: ThreadId.make(threadId),
+    };
   }, [params.environmentId, params.threadId]);
   const selectedThread = useMemo(
     () => deriveSelectedThread(selectedThreadRef, threads),

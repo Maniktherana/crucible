@@ -1,8 +1,15 @@
-import type { TerminalEvent, TerminalSessionSnapshot } from "@t3tools/contracts";
+import type {
+  TerminalAttachStreamEvent,
+  TerminalMetadataStreamEvent,
+  TerminalSessionSnapshot,
+  TerminalSummary,
+  EnvironmentId,
+} from "@t3tools/contracts";
+import { DEFAULT_TERMINAL_ID, ThreadId, type TerminalAttachInput } from "@t3tools/contracts";
 import { Atom, type AtomRegistry } from "effect/unstable/reactivity";
 
 export interface TerminalSessionState {
-  readonly snapshot: TerminalSessionSnapshot | null;
+  readonly summary: TerminalSummary | null;
   readonly buffer: string;
   readonly status: TerminalSessionSnapshot["status"] | "closed";
   readonly error: string | null;
@@ -11,15 +18,23 @@ export interface TerminalSessionState {
   readonly version: number;
 }
 
+export interface TerminalBufferState {
+  readonly buffer: string;
+  readonly status: TerminalSessionSnapshot["status"] | "closed";
+  readonly error: string | null;
+  readonly updatedAt: string | null;
+  readonly version: number;
+}
+
 export interface TerminalSessionTarget {
-  readonly environmentId: string | null;
-  readonly threadId: string | null;
+  readonly environmentId: EnvironmentId | null;
+  readonly threadId: ThreadId | null;
   readonly terminalId: string | null;
 }
 
 export interface KnownTerminalSessionTarget {
-  readonly environmentId: string;
-  readonly threadId: string;
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
   readonly terminalId: string;
 }
 
@@ -28,13 +43,57 @@ export interface KnownTerminalSession {
   readonly state: TerminalSessionState;
 }
 
+export interface KnownTerminalMetadata {
+  readonly target: KnownTerminalSessionTarget;
+  readonly summary: TerminalSummary;
+}
+
+export interface TerminalSessionListFilter {
+  readonly environmentId: EnvironmentId | null;
+  readonly threadId?: ThreadId | null;
+  readonly terminalId?: string | null;
+}
+
+export interface KnownTerminalSessionListFilter {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId | null;
+  readonly terminalId: string | null;
+}
+
 export interface TerminalSessionManagerConfig {
   readonly getRegistry: () => AtomRegistry.AtomRegistry;
   readonly maxBufferBytes?: number;
 }
 
+export interface TerminalMetadataClient {
+  readonly terminal: {
+    readonly onMetadata: (
+      listener: (event: TerminalMetadataStreamEvent) => void,
+      options?: { readonly onResubscribe?: () => void },
+    ) => () => void;
+  };
+}
+
+export interface TerminalAttachClient {
+  readonly terminal: {
+    readonly attach: (
+      input: TerminalAttachInput & { readonly terminalId: string },
+      listener: (event: TerminalAttachStreamEvent) => void,
+      options?: { readonly onResubscribe?: () => void },
+    ) => () => void;
+  };
+}
+
+export const EMPTY_TERMINAL_BUFFER_STATE = Object.freeze<TerminalBufferState>({
+  buffer: "",
+  status: "closed",
+  error: null,
+  updatedAt: null,
+  version: 0,
+});
+
 export const EMPTY_TERMINAL_SESSION_STATE = Object.freeze<TerminalSessionState>({
-  snapshot: null,
+  summary: null,
   buffer: "",
   status: "closed",
   error: null,
@@ -43,54 +102,92 @@ export const EMPTY_TERMINAL_SESSION_STATE = Object.freeze<TerminalSessionState>(
   version: 0,
 });
 
+const EMPTY_KNOWN_TERMINAL_SESSIONS = Object.freeze<Array<KnownTerminalSession>>([]);
+const EMPTY_TERMINAL_ID_LIST = Object.freeze<Array<string>>([]);
 const DEFAULT_MAX_BUFFER_BYTES = 512 * 1024;
-const knownTerminalSessionKeys = new Set<string>();
+const knownTerminalMetadataEnvironmentIds = new Set<EnvironmentId>();
+const knownTerminalBufferTargets = new Map<string, KnownTerminalSessionTarget>();
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
-export const terminalSessionStateAtom = Atom.family((key: string) => {
-  knownTerminalSessionKeys.add(key);
-  return Atom.make(EMPTY_TERMINAL_SESSION_STATE).pipe(
+export const terminalSessionMetadataAtom = Atom.family((environmentId: EnvironmentId) => {
+  knownTerminalMetadataEnvironmentIds.add(environmentId);
+  return Atom.make<Record<string, KnownTerminalMetadata>>({}).pipe(
     Atom.keepAlive,
-    Atom.withLabel(`terminal-session:${key}`),
+    Atom.withLabel(`terminal-session:metadata:${environmentId}`),
   );
 });
 
-export const EMPTY_TERMINAL_SESSION_ATOM = Atom.make(EMPTY_TERMINAL_SESSION_STATE).pipe(
+export const terminalSessionBufferAtom = Atom.family((target: KnownTerminalSessionTarget) => {
+  const key = keyFromKnownTarget(target);
+  knownTerminalBufferTargets.set(key, target);
+  return Atom.make(EMPTY_TERMINAL_BUFFER_STATE).pipe(
+    Atom.keepAlive,
+    Atom.withLabel(`terminal-session:buffer:${key}`),
+  );
+});
+
+export const EMPTY_TERMINAL_BUFFER_ATOM = Atom.make(EMPTY_TERMINAL_BUFFER_STATE).pipe(
   Atom.keepAlive,
-  Atom.withLabel("terminal-session:null"),
+  Atom.withLabel("terminal-session:buffer:null"),
 );
 
-export const knownTerminalSessionsAtom = Atom.make<Record<string, KnownTerminalSessionTarget>>(
-  {},
-).pipe(Atom.keepAlive, Atom.withLabel("terminal-session:index"));
+export const EMPTY_TERMINAL_SESSION_ATOM = Atom.make(EMPTY_TERMINAL_SESSION_STATE).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("terminal-session:state:null"),
+);
 
-export function getTerminalSessionTargetKey(target: TerminalSessionTarget): string | null {
+export const EMPTY_KNOWN_TERMINAL_SESSIONS_ATOM = Atom.make(EMPTY_KNOWN_TERMINAL_SESSIONS).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("terminal-session:known:null"),
+);
+
+export const EMPTY_TERMINAL_ID_LIST_ATOM = Atom.make(EMPTY_TERMINAL_ID_LIST).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("terminal-session:running-terminal-ids:null"),
+);
+
+export function getKnownTerminalSessionTarget(
+  target: TerminalSessionTarget,
+): KnownTerminalSessionTarget | null {
   if (target.environmentId === null || target.threadId === null || target.terminalId === null) {
     return null;
   }
 
-  return `${target.environmentId}:${target.threadId}:${target.terminalId}`;
+  return {
+    environmentId: target.environmentId,
+    threadId: target.threadId,
+    terminalId: target.terminalId,
+  };
 }
 
-function toKnownTarget(target: TerminalSessionTarget): KnownTerminalSessionTarget | null {
-  const targetKey = getTerminalSessionTargetKey(target);
-  if (targetKey === null) {
-    return null;
-  }
-
-  const environmentId = target.environmentId;
-  const threadId = target.threadId;
-  const terminalId = target.terminalId;
-  if (environmentId === null || threadId === null || terminalId === null) {
+export function getKnownTerminalSessionListFilter(
+  filter: TerminalSessionListFilter,
+): KnownTerminalSessionListFilter | null {
+  if (filter.environmentId === null) {
     return null;
   }
 
   return {
-    environmentId,
-    threadId,
-    terminalId,
+    environmentId: filter.environmentId,
+    threadId: filter.threadId ?? null,
+    terminalId: filter.terminalId ?? null,
   };
+}
+
+function knownTargetFromSummary(
+  environmentId: EnvironmentId,
+  summary: TerminalSummary,
+): KnownTerminalSessionTarget {
+  return {
+    environmentId,
+    threadId: ThreadId.make(summary.threadId),
+    terminalId: summary.terminalId,
+  };
+}
+
+function keyFromKnownTarget(target: KnownTerminalSessionTarget): string {
+  return `${target.environmentId}:${target.threadId}:${target.terminalId}`;
 }
 
 function trimBufferToBytes(buffer: string, maxBufferBytes: number): string {
@@ -115,245 +212,325 @@ function trimBufferToBytes(buffer: string, maxBufferBytes: number): string {
   return textDecoder.decode(encoded.subarray(start));
 }
 
-function stateFromSnapshot(
+function bufferFromSnapshot(
   snapshot: TerminalSessionSnapshot,
   maxBufferBytes: number,
-): TerminalSessionState {
+): TerminalBufferState {
   return {
-    snapshot,
     buffer: trimBufferToBytes(snapshot.history, maxBufferBytes),
     status: snapshot.status,
     error: null,
-    hasRunningSubprocess: false,
     updatedAt: snapshot.updatedAt,
     version: 1,
   };
 }
 
+function latestTimestamp(left: string | null, right: string | null): string | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return Date.parse(left) >= Date.parse(right) ? left : right;
+}
+
+function combineSessionState(
+  summary: TerminalSummary | null,
+  buffer: TerminalBufferState,
+): TerminalSessionState {
+  return {
+    summary,
+    buffer: buffer.buffer,
+    status: summary?.status ?? buffer.status,
+    error: buffer.error,
+    hasRunningSubprocess: summary?.hasRunningSubprocess ?? false,
+    updatedAt: latestTimestamp(summary?.updatedAt ?? null, buffer.updatedAt),
+    version: buffer.version,
+  };
+}
+
+function listKnownSessionsFromMetadata(
+  metadata: Record<string, KnownTerminalMetadata>,
+  getBuffer: (target: KnownTerminalSessionTarget) => TerminalBufferState,
+  filter?: Partial<KnownTerminalSessionTarget>,
+): ReadonlyArray<KnownTerminalSession> {
+  return Object.values(metadata)
+    .filter(({ target }) => {
+      if (filter?.environmentId && target.environmentId !== filter.environmentId) {
+        return false;
+      }
+      if (filter?.threadId && target.threadId !== filter.threadId) {
+        return false;
+      }
+      if (filter?.terminalId && target.terminalId !== filter.terminalId) {
+        return false;
+      }
+      return true;
+    })
+    .map(({ target, summary }) => ({
+      target,
+      state: combineSessionState(summary, getBuffer(target)),
+    }))
+    .sort((left, right) => {
+      const leftUpdatedAt = left.state.updatedAt ? Date.parse(left.state.updatedAt) : 0;
+      const rightUpdatedAt = right.state.updatedAt ? Date.parse(right.state.updatedAt) : 0;
+      if (leftUpdatedAt !== rightUpdatedAt) {
+        return rightUpdatedAt - leftUpdatedAt;
+      }
+      return left.target.terminalId.localeCompare(right.target.terminalId);
+    });
+}
+
+export const terminalSessionStateAtom = Atom.family((target: KnownTerminalSessionTarget) =>
+  Atom.make((get) => {
+    const targetKey = keyFromKnownTarget(target);
+    return combineSessionState(
+      get(terminalSessionMetadataAtom(target.environmentId))[targetKey]?.summary ?? null,
+      get(terminalSessionBufferAtom(target)),
+    );
+  }).pipe(Atom.keepAlive, Atom.withLabel(`terminal-session:state:${keyFromKnownTarget(target)}`)),
+);
+
+export const knownTerminalSessionsAtom = Atom.family((filter: KnownTerminalSessionListFilter) =>
+  Atom.make((get) =>
+    listKnownSessionsFromMetadata(
+      get(terminalSessionMetadataAtom(filter.environmentId)),
+      (target) => get(terminalSessionBufferAtom(target)),
+      {
+        environmentId: filter.environmentId,
+        ...(filter.threadId !== null ? { threadId: filter.threadId } : {}),
+        ...(filter.terminalId !== null ? { terminalId: filter.terminalId } : {}),
+      },
+    ),
+  ).pipe(Atom.keepAlive, Atom.withLabel(`terminal-session:known:${JSON.stringify(filter)}`)),
+);
+
+export const runningTerminalIdsAtom = Atom.family((filter: KnownTerminalSessionListFilter) =>
+  Atom.make((get) => {
+    return Object.values(get(terminalSessionMetadataAtom(filter.environmentId)))
+      .filter(
+        (entry) =>
+          entry.target.environmentId === filter.environmentId &&
+          (filter.threadId === null || entry.target.threadId === filter.threadId) &&
+          (filter.terminalId === null || entry.target.terminalId === filter.terminalId) &&
+          entry.summary.hasRunningSubprocess,
+      )
+      .map((entry) => entry.target.terminalId)
+      .sort();
+  }).pipe(
+    Atom.keepAlive,
+    Atom.withLabel(`terminal-session:running-terminal-ids:${JSON.stringify(filter)}`),
+  ),
+);
+
 export function createTerminalSessionManager(config: TerminalSessionManagerConfig) {
   const maxBufferBytes = config.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
-  const closedSessionStates = new Map<string, TerminalSessionState>();
 
-  function clearKnownSessionAtomState(targetKey: string): void {
-    knownTerminalSessionKeys.delete(targetKey);
-    config.getRegistry().set(terminalSessionStateAtom(targetKey), EMPTY_TERMINAL_SESSION_STATE);
+  function getMetadata(environmentId: EnvironmentId): Record<string, KnownTerminalMetadata> {
+    return config.getRegistry().get(terminalSessionMetadataAtom(environmentId));
   }
 
-  function rememberTarget(target: TerminalSessionTarget): string | null {
-    const targetKey = getTerminalSessionTargetKey(target);
-    const knownTarget = toKnownTarget(target);
-    if (targetKey === null || knownTarget === null) {
-      return null;
-    }
-
-    closedSessionStates.delete(targetKey);
-
-    const current = config.getRegistry().get(knownTerminalSessionsAtom);
-    const existing = current[targetKey];
-    if (
-      existing?.environmentId === knownTarget.environmentId &&
-      existing.threadId === knownTarget.threadId &&
-      existing.terminalId === knownTarget.terminalId
-    ) {
-      return targetKey;
-    }
-
-    config.getRegistry().set(knownTerminalSessionsAtom, {
-      ...current,
-      [targetKey]: knownTarget,
-    });
-    return targetKey;
+  function setMetadata(
+    environmentId: EnvironmentId,
+    next: Record<string, KnownTerminalMetadata>,
+  ): void {
+    config.getRegistry().set(terminalSessionMetadataAtom(environmentId), next);
   }
 
-  function removeTargets(
-    match: (target: KnownTerminalSessionTarget) => boolean,
-  ): ReadonlyArray<string> {
-    const current = config.getRegistry().get(knownTerminalSessionsAtom);
-    const removedKeys: string[] = [];
-    const next = Object.fromEntries(
-      Object.entries(current).filter(([key, target]) => {
-        const shouldRemove = match(target);
-        if (shouldRemove) {
-          removedKeys.push(key);
-        }
-        return !shouldRemove;
-      }),
-    ) as Record<string, KnownTerminalSessionTarget>;
-    if (Object.keys(next).length === Object.keys(current).length) {
-      return removedKeys;
-    }
+  function getBuffer(target: KnownTerminalSessionTarget): TerminalBufferState {
+    return config.getRegistry().get(terminalSessionBufferAtom(target));
+  }
 
-    config.getRegistry().set(knownTerminalSessionsAtom, next);
-    return removedKeys;
+  function setBuffer(target: KnownTerminalSessionTarget, next: TerminalBufferState): void {
+    config.getRegistry().set(terminalSessionBufferAtom(target), next);
   }
 
   function getSnapshot(target: TerminalSessionTarget): TerminalSessionState {
-    const targetKey = getTerminalSessionTargetKey(target);
-    if (targetKey === null) {
+    const knownTarget = getKnownTerminalSessionTarget(target);
+    if (knownTarget === null) {
       return EMPTY_TERMINAL_SESSION_STATE;
     }
 
-    const closedState = closedSessionStates.get(targetKey);
-    if (closedState) {
-      return closedState;
-    }
-
-    const rememberedTargetKey = rememberTarget(target);
-    if (rememberedTargetKey === null) {
-      return EMPTY_TERMINAL_SESSION_STATE;
-    }
-
-    return config.getRegistry().get(terminalSessionStateAtom(rememberedTargetKey));
-  }
-
-  function setState(targetKey: string, nextState: TerminalSessionState): void {
-    config.getRegistry().set(terminalSessionStateAtom(targetKey), nextState);
+    return combineSessionState(
+      getMetadata(knownTarget.environmentId)[keyFromKnownTarget(knownTarget)]?.summary ?? null,
+      getBuffer(knownTarget),
+    );
   }
 
   function syncSnapshot(
     target: Pick<TerminalSessionTarget, "environmentId">,
     snapshot: TerminalSessionSnapshot,
   ): void {
-    const targetKey = rememberTarget({
+    const knownTarget = getKnownTerminalSessionTarget({
       environmentId: target.environmentId,
-      threadId: snapshot.threadId,
+      threadId: ThreadId.make(snapshot.threadId),
       terminalId: snapshot.terminalId,
     });
-    if (targetKey === null) {
+    if (knownTarget === null) {
       return;
     }
 
-    setState(targetKey, stateFromSnapshot(snapshot, maxBufferBytes));
+    setBuffer(knownTarget, bufferFromSnapshot(snapshot, maxBufferBytes));
   }
 
-  function applyEvent(
+  function applyMetadataEvent(
     target: Pick<TerminalSessionTarget, "environmentId">,
-    event: TerminalEvent,
+    event: TerminalMetadataStreamEvent,
   ): void {
-    const targetKey = rememberTarget({
-      environmentId: target.environmentId,
-      threadId: event.threadId,
-      terminalId: event.terminalId,
-    });
-    if (targetKey === null) {
+    const environmentId = target.environmentId;
+    if (environmentId === null) {
       return;
     }
 
-    const current = config.getRegistry().get(terminalSessionStateAtom(targetKey));
+    if (event.type === "snapshot") {
+      const retainedKeys = new Set<string>();
+      const next = { ...getMetadata(environmentId) };
+
+      for (const terminal of event.terminals) {
+        const knownTarget = knownTargetFromSummary(environmentId, terminal);
+        const targetKey = keyFromKnownTarget(knownTarget);
+        retainedKeys.add(targetKey);
+        next[targetKey] = {
+          target: knownTarget,
+          summary: terminal,
+        };
+      }
+
+      for (const key of Object.keys(next)) {
+        if (!retainedKeys.has(key)) {
+          delete next[key];
+        }
+      }
+
+      setMetadata(environmentId, next);
+      return;
+    }
+
+    if (event.type === "upsert") {
+      const knownTarget = knownTargetFromSummary(environmentId, event.terminal);
+      const targetKey = keyFromKnownTarget(knownTarget);
+      setMetadata(environmentId, {
+        ...getMetadata(environmentId),
+        [targetKey]: {
+          target: knownTarget,
+          summary: event.terminal,
+        },
+      });
+      return;
+    }
+
+    const knownTarget = getKnownTerminalSessionTarget({
+      environmentId,
+      threadId: ThreadId.make(event.threadId),
+      terminalId: event.terminalId,
+    });
+    if (knownTarget === null) {
+      return;
+    }
+
+    const next = { ...getMetadata(environmentId) };
+    delete next[keyFromKnownTarget(knownTarget)];
+    setMetadata(environmentId, next);
+  }
+
+  function applyAttachEvent(
+    target: Pick<TerminalSessionTarget, "environmentId">,
+    event: TerminalAttachStreamEvent,
+  ): void {
+    if (event.type === "snapshot") {
+      syncSnapshot(target, event.snapshot);
+      return;
+    }
+
+    const knownTarget = getKnownTerminalSessionTarget({
+      environmentId: target.environmentId,
+      threadId: ThreadId.make(event.threadId),
+      terminalId: event.terminalId,
+    });
+    if (knownTarget === null) {
+      return;
+    }
+
+    const current = getBuffer(knownTarget);
     switch (event.type) {
-      case "started":
       case "restarted":
-        setState(targetKey, stateFromSnapshot(event.snapshot, maxBufferBytes));
+        setBuffer(knownTarget, bufferFromSnapshot(event.snapshot, maxBufferBytes));
         return;
       case "output":
-        setState(targetKey, {
+        setBuffer(knownTarget, {
           ...current,
           buffer: trimBufferToBytes(`${current.buffer}${event.data}`, maxBufferBytes),
           status: current.status === "closed" ? "running" : current.status,
           error: null,
-          updatedAt: event.createdAt,
           version: current.version + 1,
         });
         return;
       case "cleared":
-        setState(targetKey, {
+        setBuffer(knownTarget, {
           ...current,
           buffer: "",
           error: null,
-          updatedAt: event.createdAt,
           version: current.version + 1,
         });
         return;
       case "exited":
-        setState(targetKey, {
+        setBuffer(knownTarget, {
           ...current,
-          snapshot: current.snapshot
-            ? {
-                ...current.snapshot,
-                status: "exited",
-                exitCode: event.exitCode,
-                exitSignal: event.exitSignal,
-                updatedAt: event.createdAt,
-              }
-            : null,
           status: "exited",
-          hasRunningSubprocess: false,
-          updatedAt: event.createdAt,
+          error: null,
           version: current.version + 1,
         });
         return;
       case "closed":
-        closedSessionStates.set(targetKey, {
+        setBuffer(knownTarget, {
           ...current,
-          snapshot: null,
           status: "closed",
           error: null,
-          hasRunningSubprocess: false,
-          updatedAt: event.createdAt,
           version: current.version + 1,
         });
-        clearKnownSessionAtomState(targetKey);
-        removeTargets(
-          (knownTarget) =>
-            knownTarget.environmentId === target.environmentId &&
-            knownTarget.threadId === event.threadId &&
-            knownTarget.terminalId === event.terminalId,
-        );
         return;
       case "error":
-        setState(targetKey, {
+        setBuffer(knownTarget, {
           ...current,
           status: "error",
           error: event.message,
-          hasRunningSubprocess: false,
-          updatedAt: event.createdAt,
           version: current.version + 1,
         });
         return;
       case "activity":
-        setState(targetKey, {
-          ...current,
-          hasRunningSubprocess: event.hasRunningSubprocess,
-          updatedAt: event.createdAt,
-          version: current.version + 1,
-        });
         return;
     }
   }
 
   function invalidate(target?: TerminalSessionTarget): void {
     if (target) {
-      const targetKey = getTerminalSessionTargetKey(target);
-      if (targetKey !== null) {
-        closedSessionStates.delete(targetKey);
-        setState(targetKey, EMPTY_TERMINAL_SESSION_STATE);
+      const knownTarget = getKnownTerminalSessionTarget(target);
+      if (knownTarget !== null) {
+        const targetKey = keyFromKnownTarget(knownTarget);
+        const next = { ...getMetadata(knownTarget.environmentId) };
+        delete next[targetKey];
+        setMetadata(knownTarget.environmentId, next);
+        setBuffer(knownTarget, EMPTY_TERMINAL_BUFFER_STATE);
       }
       return;
     }
 
-    for (const key of knownTerminalSessionKeys) {
-      setState(key, EMPTY_TERMINAL_SESSION_STATE);
+    for (const environmentId of knownTerminalMetadataEnvironmentIds) {
+      setMetadata(environmentId, {});
     }
-    closedSessionStates.clear();
-    knownTerminalSessionKeys.clear();
-    config.getRegistry().set(knownTerminalSessionsAtom, {});
+    knownTerminalMetadataEnvironmentIds.clear();
+    for (const target of knownTerminalBufferTargets.values()) {
+      setBuffer(target, EMPTY_TERMINAL_BUFFER_STATE);
+    }
+    knownTerminalBufferTargets.clear();
   }
 
-  function invalidateEnvironment(environmentId: string): void {
+  function invalidateEnvironment(environmentId: EnvironmentId): void {
+    setMetadata(environmentId, {});
+    knownTerminalMetadataEnvironmentIds.delete(environmentId);
+
     const prefix = `${environmentId}:`;
-    for (const key of knownTerminalSessionKeys) {
+    for (const [key, target] of knownTerminalBufferTargets) {
       if (key.startsWith(prefix)) {
-        setState(key, EMPTY_TERMINAL_SESSION_STATE);
+        setBuffer(target, EMPTY_TERMINAL_BUFFER_STATE);
       }
-    }
-    for (const key of closedSessionStates.keys()) {
-      if (key.startsWith(prefix)) {
-        closedSessionStates.delete(key);
-      }
-    }
-    for (const key of removeTargets((target) => target.environmentId === environmentId)) {
-      closedSessionStates.delete(key);
-      clearKnownSessionAtomState(key);
     }
   }
 
@@ -364,41 +541,58 @@ export function createTerminalSessionManager(config: TerminalSessionManagerConfi
   function listSessions(
     filter?: Partial<KnownTerminalSessionTarget>,
   ): ReadonlyArray<KnownTerminalSession> {
-    const knownTargets = Object.values(config.getRegistry().get(knownTerminalSessionsAtom));
-    return knownTargets
-      .filter((target) => {
-        if (filter?.environmentId && target.environmentId !== filter.environmentId) {
-          return false;
+    if (filter?.environmentId) {
+      return listKnownSessionsFromMetadata(getMetadata(filter.environmentId), getBuffer, filter);
+    }
+
+    return [...knownTerminalMetadataEnvironmentIds].flatMap((environmentId) =>
+      listKnownSessionsFromMetadata(getMetadata(environmentId), getBuffer, filter),
+    );
+  }
+
+  function subscribeMetadata(input: {
+    readonly environmentId: EnvironmentId;
+    readonly client: TerminalMetadataClient;
+    readonly options?: { readonly onResubscribe?: () => void };
+  }): () => void {
+    return input.client.terminal.onMetadata(
+      (event) => applyMetadataEvent({ environmentId: input.environmentId }, event),
+      input.options,
+    );
+  }
+
+  function attach(input: {
+    readonly environmentId: EnvironmentId;
+    readonly client: TerminalAttachClient;
+    readonly terminal: TerminalAttachInput;
+    readonly onSnapshot?: (snapshot: TerminalSessionSnapshot) => void;
+    readonly onEvent?: (event: TerminalAttachStreamEvent) => void;
+    readonly options?: { readonly onResubscribe?: () => void };
+  }): () => void {
+    const terminal = {
+      ...input.terminal,
+      terminalId: input.terminal.terminalId ?? DEFAULT_TERMINAL_ID,
+    };
+    return input.client.terminal.attach(
+      terminal,
+      (event) => {
+        applyAttachEvent({ environmentId: input.environmentId }, event);
+        input.onEvent?.(event);
+        if (event.type === "snapshot") {
+          input.onSnapshot?.(event.snapshot);
         }
-        if (filter?.threadId && target.threadId !== filter.threadId) {
-          return false;
-        }
-        if (filter?.terminalId && target.terminalId !== filter.terminalId) {
-          return false;
-        }
-        return true;
-      })
-      .map((target) => ({
-        target,
-        state: getSnapshot(target),
-      }))
-      .sort((left, right) => {
-        const leftUpdatedAt = left.state.updatedAt ? Date.parse(left.state.updatedAt) : 0;
-        const rightUpdatedAt = right.state.updatedAt ? Date.parse(right.state.updatedAt) : 0;
-        if (leftUpdatedAt !== rightUpdatedAt) {
-          return rightUpdatedAt - leftUpdatedAt;
-        }
-        return left.target.terminalId.localeCompare(right.target.terminalId);
-      });
+      },
+      input.options,
+    );
   }
 
   return {
-    applyEvent,
+    attach,
     getSnapshot,
     invalidate,
     invalidateEnvironment,
     listSessions,
-    syncSnapshot,
+    subscribeMetadata,
     reset,
   };
 }

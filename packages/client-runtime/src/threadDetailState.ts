@@ -4,9 +4,9 @@ import * as Arr from "effect/Array";
 import type {
   OrchestrationThread,
   OrchestrationThreadStreamItem,
+  EnvironmentId,
   ThreadId as ThreadIdType,
 } from "@t3tools/contracts";
-import { ThreadId } from "@t3tools/contracts";
 import { Atom, type AtomRegistry } from "effect/unstable/reactivity";
 
 import {
@@ -24,8 +24,8 @@ export interface ThreadDetailState {
 }
 
 export interface ThreadDetailTarget {
-  readonly environmentId: string | null;
-  readonly threadId: string | null;
+  readonly environmentId: EnvironmentId | null;
+  readonly threadId: ThreadIdType | null;
 }
 
 export type ThreadDetailClient = Pick<WsRpcClient["orchestration"], "subscribeThread">;
@@ -34,15 +34,15 @@ export interface ThreadDetailRetentionPolicy {
   readonly idleTtlMs: number;
   readonly maxRetainedEntries: number;
   readonly shouldKeepWarm?: (
-    target: { readonly environmentId: string; readonly threadId: string },
+    target: { readonly environmentId: EnvironmentId; readonly threadId: ThreadIdType },
     state: ThreadDetailState,
   ) => boolean;
 }
 
 interface ThreadDetailEntry {
   readonly target: {
-    readonly environmentId: string;
-    readonly threadId: string;
+    readonly environmentId: EnvironmentId;
+    readonly threadId: ThreadIdType;
   };
   watcherCount: number;
   retainCount: number;
@@ -99,8 +99,8 @@ export function getThreadDetailTargetKey(target: ThreadDetailTarget): string | n
 
 export interface ThreadDetailManagerConfig {
   readonly getRegistry: () => AtomRegistry.AtomRegistry;
-  readonly getClient: (environmentId: string) => ThreadDetailClient | null;
-  readonly getClientIdentity?: (environmentId: string) => string | null;
+  readonly getClient: (environmentId: EnvironmentId) => ThreadDetailClient | null;
+  readonly getClientIdentity?: (environmentId: EnvironmentId) => string | null;
   readonly subscribeClientChanges?: (listener: () => void) => () => void;
   readonly limits?: ThreadDetailRetentionLimits;
   readonly retention?: ThreadDetailRetentionPolicy;
@@ -272,13 +272,13 @@ export function createThreadDetailManager(config: ThreadDetailManagerConfig) {
 
   function subscribeStream(
     targetKey: string,
-    target: { readonly environmentId: string; readonly threadId: string },
+    target: { readonly environmentId: EnvironmentId; readonly threadId: ThreadIdType },
     client: ThreadDetailClient,
   ): () => void {
     markPending(targetKey);
     return client.subscribeThread(
-      { threadId: ThreadId.make(target.threadId) },
-      (item) => applyStreamItem(targetKey, item, ThreadId.make(target.threadId)),
+      { threadId: target.threadId },
+      (item) => applyStreamItem(targetKey, item, target.threadId),
       {
         onResubscribe: () => markPending(targetKey),
       },
@@ -287,7 +287,7 @@ export function createThreadDetailManager(config: ThreadDetailManagerConfig) {
 
   function createDynamicSubscription(
     targetKey: string,
-    target: { readonly environmentId: string; readonly threadId: string },
+    target: { readonly environmentId: EnvironmentId; readonly threadId: ThreadIdType },
   ): () => void {
     let currentIdentity: string | null = null;
     let currentUnsub = NOOP;

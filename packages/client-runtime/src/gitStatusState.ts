@@ -1,4 +1,4 @@
-import type { GitManagerServiceError, GitStatusResult } from "@t3tools/contracts";
+import type { EnvironmentId, GitManagerServiceError, GitStatusResult } from "@t3tools/contracts";
 import type { Cause } from "effect";
 import { Atom, type AtomRegistry } from "effect/unstable/reactivity";
 import type { WsRpcClient } from "./wsRpcClient.ts";
@@ -13,7 +13,7 @@ export interface GitStatusState {
 }
 
 export interface GitStatusTarget {
-  readonly environmentId: string | null;
+  readonly environmentId: EnvironmentId | null;
   readonly cwd: string | null;
 }
 
@@ -76,13 +76,13 @@ export interface GitStatusManagerConfig {
    */
   readonly getRegistry: () => AtomRegistry.AtomRegistry;
   /** Resolve a git client for an environment. */
-  readonly getClient: (environmentId: string) => GitStatusClient | null;
+  readonly getClient: (environmentId: EnvironmentId) => GitStatusClient | null;
   /**
    * Optional: get a stable identity for the current client.
    * Used to detect reconnections — when the identity changes the
    * manager tears down the old `onStatus` stream and subscribes anew.
    */
-  readonly getClientIdentity?: (environmentId: string) => string | null;
+  readonly getClientIdentity?: (environmentId: EnvironmentId) => string | null;
   /**
    * Optional: subscribe to environment-connection changes.
    * When provided the manager reacts to client appear / disappear /

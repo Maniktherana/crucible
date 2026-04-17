@@ -12,6 +12,7 @@ import type {
   GitRunStackedActionResult,
   GitStackedAction,
   GitStatusResult,
+  EnvironmentId,
 } from "@t3tools/contracts";
 import { Atom, type AtomRegistry } from "effect/unstable/reactivity";
 
@@ -42,7 +43,7 @@ export interface GitActionState {
 }
 
 export interface GitActionTarget {
-  readonly environmentId: string | null;
+  readonly environmentId: EnvironmentId | null;
   readonly cwd: string | null;
 }
 
@@ -186,7 +187,7 @@ export function applyGitActionProgressEvent(
 
 export interface GitActionManagerConfig {
   readonly getRegistry: () => AtomRegistry.AtomRegistry;
-  readonly getClient: (environmentId: string) => GitActionClient | null;
+  readonly getClient: (environmentId: EnvironmentId) => GitActionClient | null;
   readonly getActionId?: () => string;
 }
 

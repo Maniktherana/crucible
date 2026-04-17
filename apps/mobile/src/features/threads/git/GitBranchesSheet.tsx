@@ -28,7 +28,7 @@ export function GitBranchesSheet() {
   const subtleStrongColor = useThemeColor("--color-subtle-strong");
 
   const gitStatus = useGitStatus({
-    environmentId: selectedThread?.environmentId ?? "",
+    environmentId: selectedThread?.environmentId ?? null,
     cwd: selectedThreadCwd,
   });
 

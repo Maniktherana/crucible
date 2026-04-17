@@ -213,7 +213,13 @@ export function ThreadGitControls(props: {
               key={session.terminalId}
               icon="terminal"
               onPress={() => props.onOpenTerminal(session.terminalId)}
-              subtitle={[getTerminalStatusLabel({ status: session.status }), basename(session.cwd)]
+              subtitle={[
+                getTerminalStatusLabel({
+                  status: session.status,
+                  hasRunningSubprocess: session.hasRunningSubprocess,
+                }),
+                basename(session.cwd),
+              ]
                 .filter(Boolean)
                 .join(" · ")}
             >

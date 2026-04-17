@@ -7,7 +7,6 @@ import type { WsRpcClient } from "~/rpc/wsRpcClient";
 function createTestClient() {
   const lifecycleListeners = new Set<(event: any) => void>();
   const configListeners = new Set<(event: any) => void>();
-  const terminalListeners = new Set<(event: any) => void>();
   const shellListeners = new Set<(event: any) => void>();
   let shellResubscribe: (() => void) | undefined;
 
@@ -67,15 +66,13 @@ function createTestClient() {
     },
     terminal: {
       open: vi.fn(async () => undefined),
+      attach: vi.fn(() => () => undefined),
       write: vi.fn(async () => undefined),
       resize: vi.fn(async () => undefined),
       clear: vi.fn(async () => undefined),
       restart: vi.fn(async () => undefined),
       close: vi.fn(async () => undefined),
-      onEvent: (listener: (event: any) => void) => {
-        terminalListeners.add(listener);
-        return () => terminalListeners.delete(listener);
-      },
+      onMetadata: vi.fn(() => () => undefined),
     },
     projects: {
       searchEntries: vi.fn(async () => []),
@@ -164,7 +161,6 @@ describe("createEnvironmentConnection", () => {
       client,
       applyShellEvent: vi.fn(),
       syncShellSnapshot,
-      applyTerminalEvent: vi.fn(),
     });
 
     await connection.ensureBootstrapped();
@@ -196,7 +192,6 @@ describe("createEnvironmentConnection", () => {
       client,
       applyShellEvent: vi.fn(),
       syncShellSnapshot: vi.fn(),
-      applyTerminalEvent: vi.fn(),
     });
 
     expect(() => emitWelcome(EnvironmentId.make("env-2"))).toThrow(
@@ -226,7 +221,6 @@ describe("createEnvironmentConnection", () => {
       client,
       applyShellEvent: vi.fn(),
       syncShellSnapshot,
-      applyTerminalEvent: vi.fn(),
     });
 
     await connection.ensureBootstrapped();

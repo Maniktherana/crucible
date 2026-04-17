@@ -2,15 +2,15 @@ import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
 import { ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
-import { collectActiveTerminalThreadIds } from "./terminalStateCleanup";
+import { collectActiveTerminalUiThreadKeys } from "./terminalUiStateCleanup";
 
 const threadId = (id: string): ThreadId => ThreadId.make(id);
 const threadKey = (environmentId: string, id: string): string =>
   scopedThreadKey(scopeThreadRef(environmentId as never, threadId(id)));
 
-describe("collectActiveTerminalThreadIds", () => {
+describe("collectActiveTerminalUiThreadKeys", () => {
   it("retains non-deleted server threads", () => {
-    const activeThreadIds = collectActiveTerminalThreadIds({
+    const activeThreadKeys = collectActiveTerminalUiThreadKeys({
       snapshotThreads: [
         { key: threadKey("env-a", "server-1"), deletedAt: null, archivedAt: null },
         { key: threadKey("env-b", "server-2"), deletedAt: null, archivedAt: null },
@@ -18,13 +18,13 @@ describe("collectActiveTerminalThreadIds", () => {
       draftThreadKeys: [],
     });
 
-    expect(activeThreadIds).toEqual(
+    expect(activeThreadKeys).toEqual(
       new Set([threadKey("env-a", "server-1"), threadKey("env-b", "server-2")]),
     );
   });
 
   it("ignores deleted and archived server threads and keeps local draft threads", () => {
-    const activeThreadIds = collectActiveTerminalThreadIds({
+    const activeThreadKeys = collectActiveTerminalUiThreadKeys({
       snapshotThreads: [
         { key: threadKey("env-a", "server-active"), deletedAt: null, archivedAt: null },
         {
@@ -41,15 +41,15 @@ describe("collectActiveTerminalThreadIds", () => {
       draftThreadKeys: [threadKey("env-a", "local-draft")],
     });
 
-    expect(activeThreadIds).toEqual(
+    expect(activeThreadKeys).toEqual(
       new Set([threadKey("env-a", "server-active"), threadKey("env-a", "local-draft")]),
     );
   });
 
-  it("does not keep draft-linked terminal state for archived server threads", () => {
+  it("does not keep draft-linked terminal UI state for archived server threads", () => {
     const archivedThreadId = threadKey("env-a", "server-archived");
 
-    const activeThreadIds = collectActiveTerminalThreadIds({
+    const activeThreadKeys = collectActiveTerminalUiThreadKeys({
       snapshotThreads: [
         {
           key: archivedThreadId,
@@ -60,6 +60,6 @@ describe("collectActiveTerminalThreadIds", () => {
       draftThreadKeys: [archivedThreadId, threadKey("env-a", "local-draft")],
     });
 
-    expect(activeThreadIds).toEqual(new Set([threadKey("env-a", "local-draft")]));
+    expect(activeThreadKeys).toEqual(new Set([threadKey("env-a", "local-draft")]));
   });
 });

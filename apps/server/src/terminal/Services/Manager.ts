@@ -7,12 +7,15 @@
  * @module TerminalManager
  */
 import {
+  TerminalAttachInput,
+  TerminalAttachStreamEvent,
   TerminalClearInput,
   TerminalCloseInput,
   TerminalEvent,
   TerminalCwdError,
   TerminalError,
   TerminalHistoryError,
+  TerminalMetadataStreamEvent,
   TerminalNotRunningError,
   TerminalOpenInput,
   TerminalResizeInput,
@@ -79,6 +82,16 @@ export interface TerminalManagerShape {
   ) => Effect.Effect<TerminalSessionSnapshot, TerminalError>;
 
   /**
+   * Attach to a terminal and stream its initial snapshot followed by live events.
+   *
+   * Returns an unsubscribe function.
+   */
+  readonly attachStream: (
+    input: TerminalAttachInput,
+    listener: (event: TerminalAttachStreamEvent) => Effect.Effect<void>,
+  ) => Effect.Effect<() => void, TerminalError>;
+
+  /**
    * Write input bytes to a terminal session.
    */
   readonly write: (input: TerminalWriteInput) => Effect.Effect<void, TerminalError>;
@@ -116,6 +129,15 @@ export interface TerminalManagerShape {
    */
   readonly subscribe: (
     listener: (event: TerminalEvent) => Effect.Effect<void>,
+  ) => Effect.Effect<() => void>;
+
+  /**
+   * Subscribe to lightweight terminal metadata with an initial full snapshot.
+   *
+   * Returns an unsubscribe function.
+   */
+  readonly subscribeMetadata: (
+    listener: (event: TerminalMetadataStreamEvent) => Effect.Effect<void>,
   ) => Effect.Effect<() => void>;
 }
 

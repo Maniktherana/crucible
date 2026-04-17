@@ -1,9 +1,22 @@
 import { AtomRegistry } from "effect/unstable/reactivity";
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { TerminalSessionSnapshot } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  TerminalAttachStreamEvent,
+  TerminalMetadataStreamEvent,
+  TerminalSessionSnapshot,
+  ThreadId,
+} from "@t3tools/contracts";
 
-import { createTerminalSessionManager } from "./terminalSessionState.ts";
+import {
+  createTerminalSessionManager,
+  getKnownTerminalSessionListFilter,
+  knownTerminalSessionsAtom,
+  runningTerminalIdsAtom,
+  terminalSessionStateAtom,
+  type KnownTerminalSessionTarget,
+} from "./terminalSessionState.ts";
 
 let atomRegistry = AtomRegistry.make();
 
@@ -13,8 +26,8 @@ function resetAtomRegistry() {
 }
 
 const TARGET = {
-  environmentId: "env-local",
-  threadId: "thread-1",
+  environmentId: EnvironmentId.make("env-local"),
+  threadId: ThreadId.make("thread-1"),
   terminalId: "default",
 } as const;
 
@@ -31,6 +44,48 @@ const BASE_SNAPSHOT: TerminalSessionSnapshot = {
   updatedAt: "2026-04-01T00:00:00.000Z",
 };
 
+type TerminalSessionManager = ReturnType<typeof createTerminalSessionManager>;
+
+function applyAttachEvents(
+  manager: TerminalSessionManager,
+  target: KnownTerminalSessionTarget,
+  events: ReadonlyArray<TerminalAttachStreamEvent>,
+): void {
+  manager.attach({
+    environmentId: target.environmentId,
+    terminal: {
+      threadId: target.threadId,
+      terminalId: target.terminalId,
+    },
+    client: {
+      terminal: {
+        attach: (_input, listener) => {
+          events.forEach(listener);
+          return () => undefined;
+        },
+      },
+    },
+  })();
+}
+
+function applyMetadataEvents(
+  manager: TerminalSessionManager,
+  environmentId: EnvironmentId,
+  events: ReadonlyArray<TerminalMetadataStreamEvent>,
+): void {
+  manager.subscribeMetadata({
+    environmentId,
+    client: {
+      terminal: {
+        onMetadata: (listener) => {
+          events.forEach(listener);
+          return () => undefined;
+        },
+      },
+    },
+  })();
+}
+
 describe("createTerminalSessionManager", () => {
   afterEach(() => {
     resetAtomRegistry();
@@ -41,27 +96,25 @@ describe("createTerminalSessionManager", () => {
       getRegistry: () => atomRegistry,
     });
 
-    manager.applyEvent(TARGET, {
-      type: "started",
-      threadId: TARGET.threadId,
-      terminalId: TARGET.terminalId,
-      createdAt: BASE_SNAPSHOT.updatedAt,
-      snapshot: BASE_SNAPSHOT,
-    });
-    manager.applyEvent(TARGET, {
-      type: "output",
-      threadId: TARGET.threadId,
-      terminalId: TARGET.terminalId,
-      createdAt: "2026-04-01T00:00:01.000Z",
-      data: " world",
-    });
+    applyAttachEvents(manager, TARGET, [
+      {
+        type: "snapshot",
+        snapshot: BASE_SNAPSHOT,
+      },
+      {
+        type: "output",
+        threadId: TARGET.threadId,
+        terminalId: TARGET.terminalId,
+        data: " world",
+      },
+    ]);
 
     expect(manager.getSnapshot(TARGET)).toMatchObject({
-      snapshot: BASE_SNAPSHOT,
+      summary: null,
       buffer: "hello world",
       status: "running",
       error: null,
-      updatedAt: "2026-04-01T00:00:01.000Z",
+      updatedAt: BASE_SNAPSHOT.updatedAt,
     });
   });
 
@@ -71,13 +124,14 @@ describe("createTerminalSessionManager", () => {
       maxBufferBytes: 5,
     });
 
-    manager.applyEvent(TARGET, {
-      type: "output",
-      threadId: TARGET.threadId,
-      terminalId: TARGET.terminalId,
-      createdAt: "2026-04-01T00:00:01.000Z",
-      data: "abcdef",
-    });
+    applyAttachEvents(manager, TARGET, [
+      {
+        type: "output",
+        threadId: TARGET.threadId,
+        terminalId: TARGET.terminalId,
+        data: "abcdef",
+      },
+    ]);
 
     expect(manager.getSnapshot(TARGET).buffer).toBe("bcdef");
   });
@@ -88,13 +142,14 @@ describe("createTerminalSessionManager", () => {
       maxBufferBytes: 4,
     });
 
-    manager.applyEvent(TARGET, {
-      type: "output",
-      threadId: TARGET.threadId,
-      terminalId: TARGET.terminalId,
-      createdAt: "2026-04-01T00:00:01.000Z",
-      data: "🙂🙂",
-    });
+    applyAttachEvents(manager, TARGET, [
+      {
+        type: "output",
+        threadId: TARGET.threadId,
+        terminalId: TARGET.terminalId,
+        data: "🙂🙂",
+      },
+    ]);
 
     expect(manager.getSnapshot(TARGET).buffer).toBe("🙂");
   });
@@ -104,19 +159,20 @@ describe("createTerminalSessionManager", () => {
       getRegistry: () => atomRegistry,
     });
     const otherTarget = {
-      environmentId: "env-remote",
-      threadId: "thread-1",
+      environmentId: EnvironmentId.make("env-remote"),
+      threadId: ThreadId.make("thread-1"),
       terminalId: "default",
     } as const;
 
     for (const target of [TARGET, otherTarget]) {
-      manager.applyEvent(target, {
-        type: "output",
-        threadId: target.threadId,
-        terminalId: target.terminalId,
-        createdAt: "2026-04-01T00:00:01.000Z",
-        data: target.environmentId,
-      });
+      applyAttachEvents(manager, target, [
+        {
+          type: "output",
+          threadId: target.threadId,
+          terminalId: target.terminalId,
+          data: target.environmentId,
+        },
+      ]);
     }
 
     manager.invalidateEnvironment(TARGET.environmentId);
@@ -130,29 +186,37 @@ describe("createTerminalSessionManager", () => {
       getRegistry: () => atomRegistry,
     });
 
-    manager.applyEvent(TARGET, {
-      type: "started",
-      threadId: TARGET.threadId,
-      terminalId: TARGET.terminalId,
-      createdAt: "2026-04-01T00:00:00.000Z",
-      snapshot: BASE_SNAPSHOT,
-    });
-    manager.applyEvent(
+    applyMetadataEvents(manager, TARGET.environmentId, [
       {
-        environmentId: TARGET.environmentId,
+        type: "snapshot",
+        terminals: [
+          {
+            threadId: TARGET.threadId,
+            terminalId: TARGET.terminalId,
+            cwd: "/repo",
+            worktreePath: null,
+            status: "running",
+            pid: 123,
+            exitCode: null,
+            exitSignal: null,
+            updatedAt: "2026-04-01T00:00:00.000Z",
+            hasRunningSubprocess: false,
+          },
+          {
+            threadId: TARGET.threadId,
+            terminalId: "term-2",
+            cwd: "/repo",
+            worktreePath: null,
+            status: "running",
+            pid: 124,
+            exitCode: null,
+            exitSignal: null,
+            updatedAt: "2026-04-01T00:00:02.000Z",
+            hasRunningSubprocess: false,
+          },
+        ],
       },
-      {
-        type: "started",
-        threadId: TARGET.threadId,
-        terminalId: "term-2",
-        createdAt: "2026-04-01T00:00:02.000Z",
-        snapshot: {
-          ...BASE_SNAPSHOT,
-          terminalId: "term-2",
-          updatedAt: "2026-04-01T00:00:02.000Z",
-        },
-      },
-    );
+    ]);
 
     expect(
       manager
@@ -169,13 +233,14 @@ describe("createTerminalSessionManager", () => {
       getRegistry: () => atomRegistry,
     });
 
-    manager.applyEvent(TARGET, {
-      type: "output",
-      threadId: TARGET.threadId,
-      terminalId: TARGET.terminalId,
-      createdAt: "2026-04-01T00:00:01.000Z",
-      data: "hello",
-    });
+    applyAttachEvents(manager, TARGET, [
+      {
+        type: "output",
+        threadId: TARGET.threadId,
+        terminalId: TARGET.terminalId,
+        data: "hello",
+      },
+    ]);
 
     manager.invalidateEnvironment(TARGET.environmentId);
 
@@ -192,20 +257,41 @@ describe("createTerminalSessionManager", () => {
       getRegistry: () => atomRegistry,
     });
 
-    manager.applyEvent(TARGET, {
-      type: "started",
-      threadId: TARGET.threadId,
-      terminalId: TARGET.terminalId,
-      createdAt: BASE_SNAPSHOT.updatedAt,
-      snapshot: BASE_SNAPSHOT,
-    });
-
-    manager.applyEvent(TARGET, {
-      type: "closed",
-      threadId: TARGET.threadId,
-      terminalId: TARGET.terminalId,
-      createdAt: "2026-04-01T00:00:04.000Z",
-    });
+    applyMetadataEvents(manager, TARGET.environmentId, [
+      {
+        type: "upsert",
+        terminal: {
+          threadId: TARGET.threadId,
+          terminalId: TARGET.terminalId,
+          cwd: "/repo",
+          worktreePath: null,
+          status: "running",
+          pid: 123,
+          exitCode: null,
+          exitSignal: null,
+          updatedAt: BASE_SNAPSHOT.updatedAt,
+          hasRunningSubprocess: false,
+        },
+      },
+    ]);
+    applyAttachEvents(manager, TARGET, [
+      {
+        type: "snapshot",
+        snapshot: BASE_SNAPSHOT,
+      },
+      {
+        type: "closed",
+        threadId: TARGET.threadId,
+        terminalId: TARGET.terminalId,
+      },
+    ]);
+    applyMetadataEvents(manager, TARGET.environmentId, [
+      {
+        type: "remove",
+        threadId: TARGET.threadId,
+        terminalId: TARGET.terminalId,
+      },
+    ]);
 
     expect(
       manager.listSessions({
@@ -216,8 +302,8 @@ describe("createTerminalSessionManager", () => {
     expect(manager.getSnapshot(TARGET)).toMatchObject({
       buffer: "hello",
       status: "closed",
-      snapshot: null,
-      updatedAt: "2026-04-01T00:00:04.000Z",
+      summary: null,
+      updatedAt: BASE_SNAPSHOT.updatedAt,
     });
   });
 
@@ -226,24 +312,22 @@ describe("createTerminalSessionManager", () => {
       getRegistry: () => atomRegistry,
     });
 
-    manager.applyEvent(TARGET, {
-      type: "started",
-      threadId: TARGET.threadId,
-      terminalId: TARGET.terminalId,
-      createdAt: BASE_SNAPSHOT.updatedAt,
-      snapshot: BASE_SNAPSHOT,
-    });
-    manager.applyEvent(TARGET, {
-      type: "closed",
-      threadId: TARGET.threadId,
-      terminalId: TARGET.terminalId,
-      createdAt: "2026-04-01T00:00:04.000Z",
-    });
+    applyAttachEvents(manager, TARGET, [
+      {
+        type: "snapshot",
+        snapshot: BASE_SNAPSHOT,
+      },
+      {
+        type: "closed",
+        threadId: TARGET.threadId,
+        terminalId: TARGET.terminalId,
+      },
+    ]);
 
     manager.reset();
 
     expect(manager.getSnapshot(TARGET)).toEqual({
-      snapshot: null,
+      summary: null,
       buffer: "",
       status: "closed",
       error: null,
@@ -258,19 +342,195 @@ describe("createTerminalSessionManager", () => {
       getRegistry: () => atomRegistry,
     });
 
-    manager.syncSnapshot(
-      { environmentId: TARGET.environmentId },
+    applyAttachEvents(manager, TARGET, [
       {
-        ...BASE_SNAPSHOT,
-        history: "prompt$ ",
-        updatedAt: "2026-04-01T00:00:03.000Z",
+        type: "snapshot",
+        snapshot: {
+          ...BASE_SNAPSHOT,
+          history: "prompt$ ",
+          updatedAt: "2026-04-01T00:00:03.000Z",
+        },
       },
-    );
+    ]);
 
     expect(manager.getSnapshot(TARGET)).toMatchObject({
       buffer: "prompt$ ",
       status: "running",
       updatedAt: "2026-04-01T00:00:03.000Z",
     });
+  });
+
+  it("syncs authoritative metadata snapshots and removes missing environment terminals", () => {
+    const manager = createTerminalSessionManager({
+      getRegistry: () => atomRegistry,
+    });
+
+    applyAttachEvents(manager, TARGET, [
+      {
+        type: "snapshot",
+        snapshot: BASE_SNAPSHOT,
+      },
+    ]);
+    applyAttachEvents(
+      manager,
+      {
+        environmentId: TARGET.environmentId,
+        threadId: TARGET.threadId,
+        terminalId: "term-2",
+      },
+      [
+        {
+          type: "snapshot",
+          snapshot: {
+            ...BASE_SNAPSHOT,
+            terminalId: "term-2",
+            updatedAt: "2026-04-01T00:00:02.000Z",
+          },
+        },
+      ],
+    );
+
+    applyMetadataEvents(manager, TARGET.environmentId, [
+      {
+        type: "snapshot",
+        terminals: [
+          {
+            threadId: TARGET.threadId,
+            terminalId: "term-2",
+            cwd: "/repo",
+            worktreePath: null,
+            status: "running",
+            pid: 123,
+            exitCode: null,
+            exitSignal: null,
+            updatedAt: "2026-04-01T00:00:05.000Z",
+            hasRunningSubprocess: true,
+          },
+        ],
+      },
+    ]);
+
+    expect(
+      manager.listSessions({
+        environmentId: TARGET.environmentId,
+        threadId: TARGET.threadId,
+      }),
+    ).toMatchObject([
+      {
+        target: {
+          environmentId: TARGET.environmentId,
+          threadId: TARGET.threadId,
+          terminalId: "term-2",
+        },
+        state: {
+          summary: {
+            terminalId: "term-2",
+            cwd: "/repo",
+          },
+          hasRunningSubprocess: true,
+        },
+      },
+    ]);
+  });
+
+  it("updates listed session metadata when existing session activity changes", () => {
+    const manager = createTerminalSessionManager({
+      getRegistry: () => atomRegistry,
+    });
+
+    applyMetadataEvents(manager, TARGET.environmentId, [
+      {
+        type: "upsert",
+        terminal: {
+          threadId: TARGET.threadId,
+          terminalId: TARGET.terminalId,
+          cwd: "/repo",
+          worktreePath: null,
+          status: "running",
+          pid: 123,
+          exitCode: null,
+          exitSignal: null,
+          updatedAt: BASE_SNAPSHOT.updatedAt,
+          hasRunningSubprocess: false,
+        },
+      },
+    ]);
+
+    applyMetadataEvents(manager, TARGET.environmentId, [
+      {
+        type: "upsert",
+        terminal: {
+          threadId: TARGET.threadId,
+          terminalId: TARGET.terminalId,
+          cwd: "/repo",
+          worktreePath: null,
+          status: "running",
+          pid: 123,
+          exitCode: null,
+          exitSignal: null,
+          updatedAt: "2026-04-01T00:00:05.000Z",
+          hasRunningSubprocess: true,
+        },
+      },
+    ]);
+
+    expect(
+      manager.listSessions({ environmentId: TARGET.environmentId, threadId: TARGET.threadId }),
+    ).toMatchObject([
+      {
+        state: {
+          hasRunningSubprocess: true,
+        },
+      },
+    ]);
+  });
+
+  it("derives session atoms from structurally equal target objects", () => {
+    const manager = createTerminalSessionManager({
+      getRegistry: () => atomRegistry,
+    });
+
+    applyMetadataEvents(manager, TARGET.environmentId, [
+      {
+        type: "upsert",
+        terminal: {
+          threadId: TARGET.threadId,
+          terminalId: TARGET.terminalId,
+          cwd: "/repo",
+          worktreePath: null,
+          status: "running",
+          pid: 123,
+          exitCode: null,
+          exitSignal: null,
+          updatedAt: BASE_SNAPSHOT.updatedAt,
+          hasRunningSubprocess: true,
+        },
+      },
+    ]);
+    applyAttachEvents(manager, TARGET, [
+      {
+        type: "snapshot",
+        snapshot: BASE_SNAPSHOT,
+      },
+    ]);
+
+    const equalTarget = { ...TARGET };
+    const filter = getKnownTerminalSessionListFilter({
+      environmentId: TARGET.environmentId,
+      threadId: TARGET.threadId,
+    });
+    expect(filter).not.toBeNull();
+    if (filter === null) {
+      return;
+    }
+
+    expect(atomRegistry.get(terminalSessionStateAtom(equalTarget))).toMatchObject({
+      buffer: BASE_SNAPSHOT.history,
+      hasRunningSubprocess: true,
+    });
+    expect(
+      atomRegistry.get(knownTerminalSessionsAtom({ ...filter })).map((session) => session.target),
+    ).toEqual([TARGET]);
+    expect(atomRegistry.get(runningTerminalIdsAtom({ ...filter }))).toEqual([TARGET.terminalId]);
   });
 });
