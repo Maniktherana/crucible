@@ -383,6 +383,9 @@ function classifyCodexStderrLine(rawLine: string): { readonly message: string } 
 
 export function isRecoverableThreadResumeError(error: unknown): boolean {
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  if (!message.includes("thread")) {
+    return false;
+  }
   return RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS.some((snippet) => message.includes(snippet));
 }
 
