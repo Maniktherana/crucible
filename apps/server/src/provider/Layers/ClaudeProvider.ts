@@ -10,7 +10,6 @@ import type {
 } from "@t3tools/contracts";
 import { Cache, Duration, Effect, Equal, Layer, Option, Result, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { resolveApiModelId } from "@t3tools/shared/model";
 import { decodeJsonResult } from "@t3tools/shared/schemaJson";
 import {
   query as claudeQuery,
@@ -165,50 +164,13 @@ export function getClaudeModelCapabilities(model: string | null | undefined): Mo
   );
 }
 
-function buildInitialClaudeProviderSnapshot(claudeSettings: ClaudeSettings): ServerProvider {
-  const checkedAt = new Date().toISOString();
-  const models = providerModelsFromSettings(
-    BUILT_IN_MODELS,
-    PROVIDER,
-    claudeSettings.customModels,
-    DEFAULT_CLAUDE_MODEL_CAPABILITIES,
-  );
-
-  if (!claudeSettings.enabled) {
-    return buildServerProvider({
-      provider: PROVIDER,
-      enabled: false,
-      checkedAt,
-      models,
-      slashCommands: [],
-      probe: {
-        installed: false,
-        version: null,
-        status: "warning",
-        auth: { status: "unknown" },
-        message: "Claude is disabled in T3 Code settings.",
-      },
-    });
-  }
-
-  return buildServerProvider({
-    provider: PROVIDER,
-    enabled: true,
-    checkedAt,
-    models,
-    slashCommands: [],
-    probe: {
-      installed: true,
-      version: null,
-      status: "warning",
-      auth: { status: "unknown" },
-      message: "Checking Claude availability...",
-    },
-  });
-}
-
 export function resolveClaudeApiModelId(modelSelection: ClaudeModelSelection): string {
-  return resolveApiModelId(modelSelection);
+  switch (modelSelection.options?.contextWindow) {
+    case "1m":
+      return `${modelSelection.model}[1m]`;
+    default:
+      return modelSelection.model;
+  }
 }
 export function parseClaudeAuthStatusFromOutput(result: CommandResult): {
   readonly status: Exclude<ServerProviderState, "disabled">;
@@ -858,7 +820,7 @@ export const ClaudeProviderLive = Layer.effect(
         Stream.map((settings) => settings.providers.claudeAgent),
       ),
       haveSettingsChanged: (previous, next) => !Equal.equals(previous, next),
-      buildInitialSnapshot: buildInitialClaudeProviderSnapshot,
+      initialSnapshot: makePendingClaudeProvider,
       checkProvider,
     });
   }),
