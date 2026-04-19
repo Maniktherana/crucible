@@ -40,11 +40,22 @@ export function categorizeEvent(event: CrucibleRunEvent): EventCategory {
   if (event.type === "message.part.updated") {
     const part = partOf(event);
     const partType = part?.type;
-    if (partType === "tool-invocation" || partType === "tool-call" || partType === "tool-result") {
+    // opencode builds emit a single `tool` part (with state.status transitions)
+    // and older builds emit tool-invocation / tool-call / tool-result triples.
+    // Treat all of them as "tool" events for filtering purposes.
+    if (
+      partType === "tool" ||
+      partType === "tool-invocation" ||
+      partType === "tool-call" ||
+      partType === "tool-result"
+    ) {
       return "tool";
     }
     if (partType === "text" || partType === "reasoning") {
       return "text";
+    }
+    if (partType === "step-start" || partType === "step-finish") {
+      return "system";
     }
   }
   return "system";
@@ -70,11 +81,12 @@ function isSpawnSubtask(event: CrucibleRunEvent): boolean {
   if (summary.includes("spawn-subtask") || summary.includes("spawn subtask")) return true;
   const part = partOf(event);
   if (!part) return false;
-  const toolName = (part.toolName ?? part.tool ?? part.name) as unknown;
+  const toolName = (part.tool ?? part.toolName ?? part.name) as unknown;
   if (typeof toolName === "string" && toolName.toLowerCase().includes("spawn-subtask")) {
     return true;
   }
-  const input = asRecord(part.input);
+  const state = asRecord(part.state);
+  const input = (state && asRecord(state.input)) ?? asRecord(part.input);
   const command = input?.command;
   return typeof command === "string" && command.includes("spawn-subtask");
 }
@@ -82,11 +94,14 @@ function isSpawnSubtask(event: CrucibleRunEvent): boolean {
 function extractBashCommand(event: CrucibleRunEvent): string | null {
   const part = partOf(event);
   if (!part) return null;
-  const toolName = (part.toolName ?? part.tool ?? part.name) as unknown;
+  const toolName = (part.tool ?? part.toolName ?? part.name) as unknown;
   const isBash =
     typeof toolName === "string" &&
     (toolName === "bash" || toolName === "shell" || toolName.endsWith("bash"));
-  const input = asRecord(part.input);
+  // Newer opencode shape puts input under part.state.input; older shape uses part.input.
+  const state = asRecord(part.state);
+  const stateInput = state ? asRecord(state.input) : null;
+  const input = stateInput ?? asRecord(part.input);
   const command = input?.command;
   if (isBash && typeof command === "string") return command;
   // Fall-through: sometimes the summary is like "bash: <cmd>"

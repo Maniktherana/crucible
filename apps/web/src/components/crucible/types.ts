@@ -45,6 +45,36 @@ export interface CrucibleRun {
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;
+  /** Run is waiting on external input (e.g. permission prompt from the agent). */
+  needsInput?: boolean;
+}
+
+/**
+ * CI status for a PR, populated by polling
+ * `GET /api/crucible/runs/:runId/gh-status` (Stream 1 endpoint).
+ *
+ * When the server responds with `{ status: "no_pr" }` the UI should render
+ * nothing for this run.
+ */
+export type GhCiStatus = "no_pr" | "pending" | "passing" | "failing" | "merged";
+
+export interface GhStatus {
+  status: GhCiStatus;
+  /** Short GitHub PR number (e.g. 42). Absent when status === "no_pr". */
+  prNumber?: number;
+  /** Full PR URL, when known. */
+  prUrl?: string;
+  /** ISO timestamp of the last check run, when known. */
+  updatedAt?: string;
+}
+
+/** Result from GET /api/crucible/runs/:runId/gh-status (polled when prUrl is set). */
+export interface CrucibleGhStatus {
+  status: "no_pr" | "pending" | "passing" | "failing" | "merged";
+  /** e.g. "5/7 checks passing" */
+  summary?: string;
+  prNumber?: number;
+  prUrl?: string;
 }
 
 export type KanbanColumnId = "todo" | "in_progress" | "done";

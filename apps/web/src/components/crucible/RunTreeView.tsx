@@ -1,4 +1,4 @@
-import { ExternalLinkIcon } from "lucide-react";
+import { AlertTriangleIcon, ExternalLinkIcon } from "lucide-react";
 
 import { Badge } from "~/components/ui/badge";
 import { cn } from "~/lib/utils";
@@ -11,15 +11,19 @@ interface RunTreeViewProps {
   taskRuns: CrucibleRun[];
   selectedRunId: string | null;
   onSelectRun: (id: string) => void;
+  /** Issue accent color applied to each node's left rail. */
+  accentColor?: string;
 }
 
 interface RunTreeNodeProps {
   run: CrucibleRun;
   label: string;
+  detail: string;
   isSelected: boolean;
   onClick: () => void;
   depth: number;
   isLast?: boolean;
+  accentColor?: string;
 }
 
 function truncate(text: string, limit: number): string {
@@ -36,8 +40,32 @@ function formatTokenCount(count: number): string {
   return String(count);
 }
 
-function RunTreeNode({ run, label, isSelected, onClick, depth, isLast }: RunTreeNodeProps) {
+function extractPrNumber(url: string): number | null {
+  const match = /\/pull\/(\d+)/.exec(url);
+  if (!match) return null;
+  const n = Number.parseInt(match[1] ?? "", 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** First 50 chars of the run prompt (one-lined) for a human-readable task name. */
+function taskNameFromPrompt(prompt: string): string {
+  const cleaned = prompt.replace(/\s+/g, " ").trim();
+  if (cleaned.length === 0) return "Task";
+  return cleaned.length > 50 ? `${cleaned.slice(0, 50)}…` : cleaned;
+}
+
+function RunTreeNode({
+  run,
+  label,
+  detail,
+  isSelected,
+  onClick,
+  depth,
+  isLast,
+  accentColor,
+}: RunTreeNodeProps) {
   const totalTokens = sumTokens(run);
+  const prNumber = run.prUrl ? extractPrNumber(run.prUrl) : null;
 
   return (
     <button
@@ -48,7 +76,12 @@ function RunTreeNode({ run, label, isSelected, onClick, depth, isLast }: RunTree
         "hover:bg-accent/50",
         isSelected && "bg-accent ring-1 ring-border",
       )}
-      style={{ paddingLeft: `${8 + depth * 18}px` }}
+      style={{
+        paddingLeft: `${8 + depth * 18}px`,
+        ...(accentColor
+          ? { borderLeft: `3px solid ${accentColor}`, paddingLeft: `${10 + depth * 18}px` }
+          : {}),
+      }}
     >
       {depth > 0 && (
         <span
@@ -60,18 +93,30 @@ function RunTreeNode({ run, label, isSelected, onClick, depth, isLast }: RunTree
         />
       )}
       <RunStatusBadge status={run.status} />
-      <span className="font-medium">{label}</span>
-      <span className="truncate text-xs text-muted-foreground">{truncate(run.prompt, 80)}</span>
+      <span className="shrink-0 font-medium">{label}</span>
+      <span className="truncate text-xs text-muted-foreground">{detail}</span>
       {totalTokens > 0 && (
         <span className="shrink-0 text-[10px] text-muted-foreground">
           {formatTokenCount(totalTokens)} tokens
         </span>
       )}
-      {run.prUrl && (
-        <Badge variant="secondary" size="sm" className="ml-auto shrink-0 text-[10px]">
-          <ExternalLinkIcon className="h-2.5 w-2.5" />
-          PR
+      {run.needsInput && (
+        <Badge size="sm" className="shrink-0 bg-orange-500/20 text-orange-400 text-[10px]">
+          <AlertTriangleIcon className="h-2.5 w-2.5" />
+          Blocked
         </Badge>
+      )}
+      {run.prUrl && (
+        <a
+          href={run.prUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="ml-auto inline-flex shrink-0 items-center gap-1 rounded border bg-background/40 px-1.5 py-0.5 text-[10px] font-mono text-foreground hover:bg-background"
+        >
+          <ExternalLinkIcon className="h-2.5 w-2.5" />
+          {prNumber !== null ? `PR #${prNumber}` : "PR"}
+        </a>
       )}
     </button>
   );
@@ -82,6 +127,7 @@ export function RunTreeView({
   taskRuns,
   selectedRunId,
   onSelectRun,
+  accentColor,
 }: RunTreeViewProps) {
   return (
     <div className="space-y-1">
@@ -92,20 +138,24 @@ export function RunTreeView({
       <RunTreeNode
         run={managerRun}
         label="Manager"
+        detail={truncate(managerRun.prompt, 80)}
         isSelected={selectedRunId === managerRun.id}
         onClick={() => onSelectRun(managerRun.id)}
         depth={0}
+        {...(accentColor ? { accentColor } : {})}
       />
 
       {taskRuns.map((run, i) => (
         <RunTreeNode
           key={run.id}
           run={run}
-          label={`Task ${i + 1}`}
+          label={taskNameFromPrompt(run.prompt)}
+          detail=""
           isSelected={selectedRunId === run.id}
           onClick={() => onSelectRun(run.id)}
           depth={1}
           isLast={i === taskRuns.length - 1}
+          {...(accentColor ? { accentColor } : {})}
         />
       ))}
 
