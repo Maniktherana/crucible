@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "~/components/ui/empty";
 import { toastManager } from "~/components/ui/toast";
 
 import type { CrucibleIssue, CrucibleRun } from "./types";
 import { CardDetailPanel } from "./CardDetailPanel";
 import { KanbanColumn } from "./KanbanColumn";
+import { OnboardingView } from "./OnboardingView";
 import { deriveKanbanCards, getRepoPath, useCrucibleStore } from "./useCrucibleStore";
 
 const POLL_INTERVAL_MS = 2000;
@@ -42,8 +44,13 @@ export function KanbanBoard() {
 
   const [startingIssueNumber, setStartingIssueNumber] = useState<number | null>(null);
 
-  // Poll runs every 2s while a repo is selected
+  // ---- Hooks MUST come before any conditional returns. React uses call
+  // order to match hooks to their slots; returning early on the first render
+  // and then running these on a subsequent render changes the hook count,
+  // which throws "Rendered more hooks than during the previous render". ----
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Poll runs every 2s while a repo is selected.
   useEffect(() => {
     if (!selectedRepo) return;
 
@@ -51,7 +58,6 @@ export function KanbanBoard() {
       void fetchRuns(selectedRepo).then(upsertRuns);
     };
 
-    // Immediate first poll
     poll();
     timerRef.current = setInterval(poll, POLL_INTERVAL_MS);
 
@@ -109,6 +115,27 @@ export function KanbanBoard() {
     },
     [repos, selectedRepo],
   );
+
+  // ---- Now it's safe to branch on state. ----
+
+  // Show onboarding when no repos are cloned.
+  if (repos.length === 0) {
+    return <OnboardingView />;
+  }
+
+  // Show prompt to select a repo when repos exist but none selected.
+  if (!selectedRepo) {
+    return (
+      <Empty className="h-full">
+        <EmptyHeader>
+          <EmptyTitle>Select a repository from the dropdown above</EmptyTitle>
+          <EmptyDescription>
+            Choose a repository to view its issues on the kanban board.
+          </EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
+  }
 
   const cards = deriveKanbanCards(issues, runs);
   const todoCards = cards.filter((c) => c.column === "todo");
