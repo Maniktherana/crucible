@@ -1,9 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 
-import { NoActiveThreadState } from "../components/NoActiveThreadState";
+import { KanbanBoard } from "../components/crucible/KanbanBoard";
 
 function ChatIndexRouteView() {
-  return <NoActiveThreadState />;
+  return <KanbanBoard />;
 }
 
 export const Route = createFileRoute("/_chat/")({

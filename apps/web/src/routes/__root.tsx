@@ -11,7 +11,7 @@ import { useEffect, useEffectEvent, useRef } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
 
 import { APP_DISPLAY_NAME } from "../branding";
-import { AppSidebarLayout } from "../components/AppSidebarLayout";
+import { CrucibleLayout } from "../components/crucible/CrucibleLayout";
 import { CommandPalette } from "../components/CommandPalette";
 import {
   SlowRpcAckToastCoordinator,
@@ -100,9 +100,9 @@ function RootRouteView() {
         <SlowRpcAckToastCoordinator />
         <WebSocketConnectionSurface>
           <CommandPalette>
-            <AppSidebarLayout>
+            <CrucibleLayout>
               <Outlet />
-            </AppSidebarLayout>
+            </CrucibleLayout>
           </CommandPalette>
         </WebSocketConnectionSurface>
       </AnchoredToastProvider>
