@@ -1,0 +1,23 @@
+{
+  "$schema": "https://crucible.dev/schemas/config.v1.json",
+  "version": 1,
+  "project": {
+    "name": "{{PROJECT_NAME}}",
+    "repo": "{{REPO_OWNER}}/{{REPO_NAME}}",
+    "remoteUrl": "{{REMOTE_URL}}",
+    "defaultBranch": "main"
+  },
+  "agent": {
+    "provider": "codex",
+    "model": "default",
+    "maxTurns": 25
+  },
+  "eval": {
+    "tasksFile": "./eval/tasks.json",
+    "runDirectory": ".crucible/runs",
+    "timeoutMs": 600000
+  },
+  "install": {
+    "script": "./init.sh"
+  }
+}
