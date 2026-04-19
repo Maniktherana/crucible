@@ -41,6 +41,13 @@ export const useCrucibleStore = create<CrucibleState>((set) => ({
   setSelectedCard: (card) => set({ selectedCard: card }),
 }));
 
+/** Look up the on-disk path for the currently selected repo. */
+export function getRepoPath(repos: CrucibleRepo[], repoName: string | null): string | null {
+  if (!repoName) return null;
+  const match = repos.find((r) => r.name === repoName);
+  return match?.path ?? null;
+}
+
 /** Derive kanban cards from issues + runs (pure selector, not stored). */
 export function deriveKanbanCards(issues: CrucibleIssue[], runs: CrucibleRun[]): KanbanCard[] {
   return issues.map((issue) => {

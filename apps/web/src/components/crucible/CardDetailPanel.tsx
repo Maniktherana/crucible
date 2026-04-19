@@ -12,7 +12,7 @@ import { EventStreamView, type EventFilterMode } from "./EventStreamView";
 import { RunStatusBadge } from "./RunStatusBadge";
 import { RunTreeView } from "./RunTreeView";
 import type { CrucibleRun, KanbanCard } from "./types";
-import { useCrucibleStore } from "./useCrucibleStore";
+import { getRepoPath, useCrucibleStore } from "./useCrucibleStore";
 
 const RUN_POLL_INTERVAL_MS = 2000;
 
@@ -69,6 +69,7 @@ function useRunPolling(runIds: string[]) {
 
 export function CardDetailPanel({ card, onClose }: CardDetailPanelProps) {
   const runs = useCrucibleStore((s) => s.runs);
+  const repos = useCrucibleStore((s) => s.repos);
   const selectedRepo = useCrucibleStore((s) => s.selectedRepo);
 
   // Prefer the latest version of the card's runs from the global store
@@ -123,6 +124,11 @@ export function CardDetailPanel({ card, onClose }: CardDetailPanelProps) {
       setStartError("No repository selected.");
       return;
     }
+    const directory = getRepoPath(repos, repoForStart);
+    if (!directory) {
+      setStartError("No local directory found for the selected repository.");
+      return;
+    }
     setStarting(true);
     setStartError(null);
     try {
@@ -132,7 +138,10 @@ export function CardDetailPanel({ card, onClose }: CardDetailPanelProps) {
         body: JSON.stringify({
           repo: repoForStart,
           issueNumber: card.issue.number,
+          issueTitle: card.issue.title,
+          issueBody: card.issue.body,
           prompt: `Issue #${card.issue.number}: ${card.issue.title}\n\n${card.issue.body}`,
+          directory,
           plannerMode: true,
           type: "manager",
         }),
@@ -146,7 +155,7 @@ export function CardDetailPanel({ card, onClose }: CardDetailPanelProps) {
     } finally {
       setStarting(false);
     }
-  }, [card.issue.body, card.issue.number, card.issue.title, repoForStart]);
+  }, [card.issue.body, card.issue.number, card.issue.title, repoForStart, repos]);
 
   return (
     <Sheet

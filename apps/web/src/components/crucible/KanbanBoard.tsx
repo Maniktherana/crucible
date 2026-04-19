@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef } from "react";
 
+import { toastManager } from "~/components/ui/toast";
+
 import type { CrucibleIssue, CrucibleRun } from "./types";
 import { CardDetailPanel } from "./CardDetailPanel";
 import { KanbanColumn } from "./KanbanColumn";
-import { deriveKanbanCards, useCrucibleStore } from "./useCrucibleStore";
+import { deriveKanbanCards, getRepoPath, useCrucibleStore } from "./useCrucibleStore";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -20,6 +22,7 @@ async function fetchRuns(repo: string): Promise<CrucibleRun[]> {
 
 export function KanbanBoard() {
   const selectedRepo = useCrucibleStore((s) => s.selectedRepo);
+  const repos = useCrucibleStore((s) => s.repos);
   const issues = useCrucibleStore((s) => s.issues);
   const runs = useCrucibleStore((s) => s.runs);
   const selectedCard = useCrucibleStore((s) => s.selectedCard);
@@ -47,24 +50,48 @@ export function KanbanBoard() {
   const handleStartIssue = useCallback(
     async (issue: CrucibleIssue) => {
       if (!selectedRepo) return;
+      const directory = getRepoPath(repos, selectedRepo);
+      if (!directory) {
+        toastManager.add({
+          type: "error",
+          title: "Cannot start agent",
+          description: "No local directory found for the selected repository.",
+        });
+        return;
+      }
       try {
-        await fetch("/api/crucible/runs", {
+        const res = await fetch("/api/crucible/runs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             repo: selectedRepo,
             issueNumber: issue.number,
+            issueTitle: issue.title,
+            issueBody: issue.body,
             prompt: `Issue #${issue.number}: ${issue.title}\n\n${issue.body}`,
+            directory,
             plannerMode: true,
             type: "manager",
           }),
         });
-        // Polling will pick up the new run automatically
-      } catch {
-        // Silently fail — polling will reconcile
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(text || `Start failed (${res.status})`);
+        }
+        toastManager.add({
+          type: "success",
+          title: "Agent started",
+          description: `Agent started for Issue #${issue.number}`,
+        });
+      } catch (err) {
+        toastManager.add({
+          type: "error",
+          title: "Failed to start agent",
+          description: err instanceof Error ? err.message : "Unknown error",
+        });
       }
     },
-    [selectedRepo],
+    [repos, selectedRepo],
   );
 
   const cards = deriveKanbanCards(issues, runs);
