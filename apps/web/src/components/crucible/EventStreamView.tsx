@@ -22,12 +22,24 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
 }
 
+/**
+ * opencode `message.part.updated` events nest the real part under
+ * `payload.properties.part`. Everything tool/text related lives there.
+ */
+function partOf(event: CrucibleRunEvent): Record<string, unknown> | null {
+  const payload = asRecord(event.payload);
+  if (!payload) return null;
+  const props = asRecord(payload.properties);
+  if (!props) return null;
+  return asRecord(props.part);
+}
+
 export function categorizeEvent(event: CrucibleRunEvent): EventCategory {
   if (event.type === "session.error" || event.type.endsWith(".error")) return "error";
 
   if (event.type === "message.part.updated") {
-    const payload = asRecord(event.payload);
-    const partType = payload?.type;
+    const part = partOf(event);
+    const partType = part?.type;
     if (partType === "tool-invocation" || partType === "tool-call" || partType === "tool-result") {
       return "tool";
     }
@@ -56,25 +68,25 @@ function formatRelativeTime(isoString: string): string {
 function isSpawnSubtask(event: CrucibleRunEvent): boolean {
   const summary = event.summary?.toLowerCase?.() ?? "";
   if (summary.includes("spawn-subtask") || summary.includes("spawn subtask")) return true;
-  const payload = asRecord(event.payload);
-  if (!payload) return false;
-  const toolName = (payload.toolName ?? payload.tool ?? payload.name) as unknown;
+  const part = partOf(event);
+  if (!part) return false;
+  const toolName = (part.toolName ?? part.tool ?? part.name) as unknown;
   if (typeof toolName === "string" && toolName.toLowerCase().includes("spawn-subtask")) {
     return true;
   }
-  const input = asRecord(payload.input);
+  const input = asRecord(part.input);
   const command = input?.command;
   return typeof command === "string" && command.includes("spawn-subtask");
 }
 
 function extractBashCommand(event: CrucibleRunEvent): string | null {
-  const payload = asRecord(event.payload);
-  if (!payload) return null;
-  const toolName = (payload.toolName ?? payload.tool ?? payload.name) as unknown;
+  const part = partOf(event);
+  if (!part) return null;
+  const toolName = (part.toolName ?? part.tool ?? part.name) as unknown;
   const isBash =
     typeof toolName === "string" &&
     (toolName === "bash" || toolName === "shell" || toolName.endsWith("bash"));
-  const input = asRecord(payload.input);
+  const input = asRecord(part.input);
   const command = input?.command;
   if (isBash && typeof command === "string") return command;
   // Fall-through: sometimes the summary is like "bash: <cmd>"

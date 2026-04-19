@@ -50,6 +50,7 @@ type ChatMessage =
       childRunId?: string;
       rawInput: unknown;
     })
+  | (BaseMsg & { kind: "step-start" })
   | (BaseMsg & { kind: "system"; content: string });
 
 // --- Payload helpers ----------------------------------------------------------
@@ -65,6 +66,53 @@ function stringifySafe(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+/**
+ * Drill into the nested opencode event shape:
+ *   event.payload = { type: "message.part.updated", properties: { part: {...} } }
+ *
+ * Returns the inner `part` record or `null` when this event does not carry one.
+ */
+function partOf(event: CrucibleRunEvent): Record<string, unknown> | null {
+  const payload = asRecord(event.payload);
+  if (!payload) return null;
+  const props = asRecord(payload.properties);
+  if (!props) return null;
+  return asRecord(props.part);
+}
+
+/**
+ * Tool results can arrive as a string, a wrapper like `{ type, value }` (AI SDK
+ * shape), or an array of content blocks. Collapse to a human-readable string.
+ */
+function extractToolResult(output: unknown): string {
+  if (typeof output === "string") return output;
+  const rec = asRecord(output);
+  if (rec) {
+    if (typeof rec.value === "string") return rec.value;
+    if (typeof rec.text === "string") return rec.text;
+    if (typeof rec.stdout === "string") return rec.stdout;
+    if (Array.isArray(rec.content)) {
+      return rec.content
+        .map((c) => {
+          const cr = asRecord(c);
+          if (cr && typeof cr.text === "string") return cr.text;
+          return stringifySafe(c);
+        })
+        .join("\n");
+    }
+  }
+  if (Array.isArray(output)) {
+    return output
+      .map((c) => {
+        const cr = asRecord(c);
+        if (cr && typeof cr.text === "string") return cr.text;
+        return stringifySafe(c);
+      })
+      .join("\n");
+  }
+  return stringifySafe(output);
 }
 
 function extractCommandText(input: unknown): string {
@@ -103,22 +151,36 @@ function extractSpawnPrompt(input: unknown, commandText: string): string {
   return commandText;
 }
 
-function stableKey(event: CrucibleRunEvent): string {
-  const payload = asRecord(event.payload);
-  const candidate =
-    (payload?.id as string | undefined) ??
-    (payload?.partId as string | undefined) ??
-    (payload?.part_id as string | undefined) ??
-    (payload?.partID as string | undefined);
-  return candidate ?? event.id;
+function stableKey(event: CrucibleRunEvent, part: Record<string, unknown> | null): string {
+  if (part) {
+    const candidate =
+      (part.id as string | undefined) ??
+      (part.partId as string | undefined) ??
+      (part.part_id as string | undefined) ??
+      (part.partID as string | undefined);
+    if (candidate) return candidate;
+  }
+  return event.id;
 }
 
 /**
  * Parse raw run events into an ordered, deduplicated list of chat messages.
  *
- * opencode streams `message.part.updated` events incrementally — each update
- * carries the *full* text-so-far for the same part id. We collapse those into
- * a single entry that keeps the latest content at its original position.
+ * opencode's server emits `message.part.updated` events whose payload has a
+ * nested shape:
+ *
+ *   event.payload = {
+ *     type: "message.part.updated",
+ *     properties: {
+ *       sessionID, messageID,
+ *       part: { type: "text" | "tool-invocation" | "tool-result" | "reasoning" | "step-start",
+ *               id: "prt_...", text?, toolName?, input?, output? }
+ *     }
+ *   }
+ *
+ * Each update carries the *full* part-so-far for a stable `part.id`, so we
+ * upsert by that id — the latest update replaces earlier ones while keeping
+ * the original position in the conversation.
  */
 function parseMessages(events: CrucibleRunEvent[], childRunIds: string[]): ChatMessage[] {
   const entries: { key: string; msg: ChatMessage }[] = [];
@@ -136,7 +198,8 @@ function parseMessages(events: CrucibleRunEvent[], childRunIds: string[]): ChatM
     }
   };
 
-  // Prefix-extend fallback for text parts that lack stable ids.
+  // Prefix-extend fallback for text/reasoning parts that happen to lack a
+  // stable `part.id` (defensive — opencode usually provides one).
   const tryPrefixExtend = (text: string, at: string, kind: "text" | "reasoning"): boolean => {
     for (let i = entries.length - 1; i >= 0; i--) {
       const prev = entries[i]!.msg;
@@ -153,13 +216,13 @@ function parseMessages(events: CrucibleRunEvent[], childRunIds: string[]): ChatM
 
   for (const event of events) {
     if (event.type !== "message.part.updated") continue;
-    const payload = asRecord(event.payload);
-    if (!payload) continue;
-    const partType = payload.type;
-    const key = stableKey(event);
+    const part = partOf(event);
+    if (!part) continue;
+    const partType = part.type;
+    const key = stableKey(event, part);
 
     if (partType === "text" || partType === "reasoning") {
-      const content = typeof payload.text === "string" ? payload.text : "";
+      const content = typeof part.text === "string" ? part.text : "";
       if (!content.trim()) continue;
 
       const hasStableKey = key !== event.id;
@@ -174,15 +237,24 @@ function parseMessages(events: CrucibleRunEvent[], childRunIds: string[]): ChatM
       continue;
     }
 
+    if (partType === "step-start") {
+      upsert(key, {
+        id: key,
+        kind: "step-start",
+        timestamp: event.at,
+      });
+      continue;
+    }
+
     if (partType === "tool-invocation" || partType === "tool-call") {
       const toolName =
-        (payload.toolName as string | undefined) ??
-        (payload.tool as string | undefined) ??
-        (payload.name as string | undefined) ??
+        (part.toolName as string | undefined) ??
+        (part.tool as string | undefined) ??
+        (part.name as string | undefined) ??
         "tool";
-      const commandText = extractCommandText(payload.input);
+      const commandText = extractCommandText(part.input);
 
-      if (isSpawnSubtask(toolName, commandText, payload.input)) {
+      if (isSpawnSubtask(toolName, commandText, part.input)) {
         let childRunId = spawnKeyToChildId.get(key);
         if (!childRunId && spawnCursor < childRunIds.length) {
           const next = childRunIds[spawnCursor++];
@@ -194,9 +266,9 @@ function parseMessages(events: CrucibleRunEvent[], childRunIds: string[]): ChatM
         upsert(key, {
           id: key,
           kind: "spawn",
-          prompt: extractSpawnPrompt(payload.input, commandText),
+          prompt: extractSpawnPrompt(part.input, commandText),
           ...(childRunId ? { childRunId } : {}),
-          rawInput: payload.input,
+          rawInput: part.input,
           timestamp: event.at,
         });
         continue;
@@ -207,18 +279,18 @@ function parseMessages(events: CrucibleRunEvent[], childRunIds: string[]): ChatM
         kind: "tool-call",
         toolName,
         commandText,
-        rawInput: payload.input,
+        rawInput: part.input,
         timestamp: event.at,
       });
       continue;
     }
 
     if (partType === "tool-result") {
-      const output = payload.output ?? payload.result ?? payload.stdout ?? "";
+      const raw = part.output ?? part.result ?? part.stdout ?? "";
       upsert(key, {
         id: key,
         kind: "tool-result",
-        output: stringifySafe(output),
+        output: extractToolResult(raw),
         timestamp: event.at,
       });
       continue;
@@ -410,6 +482,19 @@ function SystemMessage({ content }: { content: string }) {
   return <div className="text-center text-[11px] text-muted-foreground/70 italic">{content}</div>;
 }
 
+function StepStartDivider() {
+  return (
+    <div
+      className="flex items-center gap-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground/60"
+      aria-hidden
+    >
+      <span className="h-px flex-1 bg-border/60" />
+      <span>step</span>
+      <span className="h-px flex-1 bg-border/60" />
+    </div>
+  );
+}
+
 function ChatMessageRow({
   message,
   taskRunMap,
@@ -439,6 +524,8 @@ function ChatMessageRow({
         />
       );
     }
+    case "step-start":
+      return <StepStartDivider />;
     case "system":
       return <SystemMessage content={message.content} />;
   }
