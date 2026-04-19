@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as FS from "node:fs/promises";
 import * as OS from "node:os";
 import * as Path from "node:path";
@@ -36,6 +36,9 @@ import {
   updateRunStatus as dbUpdateRunStatus,
   addChildRunId as dbAddChildRunId,
   deleteRunsByRepo as dbDeleteRunsByRepo,
+  persistAttachment,
+  getAttachmentsForRun,
+  type CrucibleAttachment,
 } from "./persistence.ts";
 
 // Module-scope init — async but fire-and-forget (tracing is best-effort).
@@ -220,6 +223,13 @@ function pushRunEvent(run: CrucibleRunRecord, event: Omit<CrucibleRunEvent, "id"
     run.events.splice(0, run.events.length - MAX_STORED_EVENTS);
   }
   run.updatedAt = nowIso();
+
+  // Ingest any SCREENSHOT_SAVED markers from event payload + summary
+  ingestScreenshotMarkers({
+    runId: run.id,
+    runDirectory: run.directory,
+    text: `${eventObj.summary}\n${JSON.stringify(eventObj.payload ?? "")}`,
+  });
 
   // Best-effort NDJSON log to disk
   void FS.mkdir(CRUCIBLE_LOG_DIR, { recursive: true })
@@ -528,6 +538,7 @@ async function serializeRun(run: CrucibleRunRecord) {
     startedAt: run.startedAt ?? null,
     completedAt: run.completedAt ?? null,
     durationMs: run.durationMs ?? null,
+    attachments: getAttachmentsForRun(run.id),
   };
 }
 
@@ -1048,6 +1059,60 @@ function contentTypeForPath(filePath: string): string {
       return "application/javascript";
     default:
       return "text/plain";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Screenshot attachment ingestion
+// ---------------------------------------------------------------------------
+
+const SCREENSHOT_MARKER_RE = /^SCREENSHOT_SAVED:\s+(\S+)$/gm;
+
+function inferScreenshotLabel(filePath: string): string {
+  if (/-before\.(png|jpe?g|webp)$/i.test(filePath)) return "before";
+  if (/-after\.(png|jpe?g|webp)$/i.test(filePath)) return "after";
+  return "";
+}
+
+function attachmentIdFor(runId: string, path: string): string {
+  return createHash("sha1").update(`${runId}:${path}`).digest("hex").slice(0, 16);
+}
+
+/**
+ * Scan an arbitrary text blob for SCREENSHOT_SAVED marker lines and persist
+ * one attachment row per unique (runId, path). Idempotent — duplicates are
+ * ignored at the SQL level via INSERT OR IGNORE + UNIQUE(run_id, path).
+ *
+ * Security: only paths under `runDirectory` are persisted. Traversal or
+ * absolute paths pointing outside the worktree are silently dropped.
+ */
+function ingestScreenshotMarkers(params: {
+  runId: string;
+  runDirectory: string;
+  text: string;
+}): void {
+  if (!params.text || params.text.indexOf("SCREENSHOT_SAVED:") === -1) return;
+  const now = new Date().toISOString();
+  // Reset regex lastIndex for each call (it's a /g regex)
+  const re = new RegExp(SCREENSHOT_MARKER_RE.source, "gm");
+  const seen = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(params.text)) !== null) {
+    const rawPath = match[1];
+    if (!rawPath) continue;
+    // Only accept absolute paths inside the run's worktree.
+    const absolute = Path.resolve(rawPath);
+    const dirPrefix = Path.resolve(params.runDirectory);
+    if (!absolute.startsWith(dirPrefix + Path.sep) && absolute !== dirPrefix) continue;
+    if (seen.has(absolute)) continue;
+    seen.add(absolute);
+    persistAttachment({
+      id: attachmentIdFor(params.runId, absolute),
+      runId: params.runId,
+      path: absolute,
+      label: inferScreenshotLabel(absolute),
+      createdAt: now,
+    } satisfies CrucibleAttachment);
   }
 }
 

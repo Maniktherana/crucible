@@ -18,6 +18,14 @@ import Database from "better-sqlite3";
 // Types (mirrors the subset of CrucibleRunRecord we persist)
 // ---------------------------------------------------------------------------
 
+export interface CrucibleAttachment {
+  id: string;
+  runId: string;
+  path: string;
+  label: string;
+  createdAt: string;
+}
+
 export interface PersistedCrucibleRun {
   id: string;
   type: string;
@@ -58,6 +66,9 @@ interface Statements {
   selectAll: Database.Statement;
   deleteById: Database.Statement;
   selectByRepo: Database.Statement;
+  insertAttachment: Database.Statement;
+  selectAttachmentsByRun: Database.Statement;
+  deleteAttachmentsByRun: Database.Statement;
 }
 
 let stmts: Statements | null = null;
@@ -92,12 +103,24 @@ CREATE TABLE IF NOT EXISTS crucible_runs (
 
 CREATE INDEX IF NOT EXISTS idx_crucible_runs_repo ON crucible_runs(repo);
 CREATE INDEX IF NOT EXISTS idx_crucible_runs_parent ON crucible_runs(parent_run_id);
+
+CREATE TABLE IF NOT EXISTS crucible_attachments (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (run_id) REFERENCES crucible_runs(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_attachments_run_path ON crucible_attachments(run_id, path);
+CREATE INDEX IF NOT EXISTS idx_attachments_run ON crucible_attachments(run_id);
 `;
 
 export function initCrucibleDb(dbPath: string): void {
   FS.mkdirSync(Path.dirname(dbPath), { recursive: true });
   db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
+  db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
 
   stmts = {
@@ -140,6 +163,20 @@ export function initCrucibleDb(dbPath: string): void {
     deleteById: db.prepare("DELETE FROM crucible_runs WHERE id = @id"),
 
     selectByRepo: db.prepare("SELECT id FROM crucible_runs WHERE repo = @repo"),
+
+    insertAttachment: db.prepare(`
+      INSERT OR IGNORE INTO crucible_attachments (id, run_id, path, label, created_at)
+      VALUES (@id, @runId, @path, @label, @createdAt)
+    `),
+
+    selectAttachmentsByRun: db.prepare(`
+      SELECT id, run_id, path, label, created_at
+      FROM crucible_attachments
+      WHERE run_id = @runId
+      ORDER BY created_at ASC
+    `),
+
+    deleteAttachmentsByRun: db.prepare("DELETE FROM crucible_attachments WHERE run_id = @runId"),
   };
 }
 
@@ -303,4 +340,35 @@ export function deleteAllRuns(): number {
   if (!db) return 0;
   const result = db.prepare("DELETE FROM crucible_runs").run();
   return result.changes;
+}
+
+// ---------------------------------------------------------------------------
+// Attachment CRUD
+// ---------------------------------------------------------------------------
+
+export function persistAttachment(a: CrucibleAttachment): void {
+  stmts?.insertAttachment.run({
+    id: a.id,
+    runId: a.runId,
+    path: a.path,
+    label: a.label,
+    createdAt: a.createdAt,
+  });
+}
+
+export function getAttachmentsForRun(runId: string): CrucibleAttachment[] {
+  const rows = (stmts?.selectAttachmentsByRun.all({ runId }) ?? []) as Array<{
+    id: string;
+    run_id: string;
+    path: string;
+    label: string;
+    created_at: string;
+  }>;
+  return rows.map((r) => ({
+    id: r.id,
+    runId: r.run_id,
+    path: r.path,
+    label: r.label,
+    createdAt: r.created_at,
+  }));
 }
