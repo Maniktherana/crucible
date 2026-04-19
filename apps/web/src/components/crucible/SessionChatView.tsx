@@ -1,10 +1,4 @@
-import {
-  ArrowDownIcon,
-  ChevronRightIcon,
-  GitBranchIcon,
-  ImageIcon,
-  TerminalIcon,
-} from "lucide-react";
+import { ArrowDownIcon, GitBranchIcon, ImageIcon, LightbulbIcon, TerminalIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -15,9 +9,6 @@ import { cn } from "~/lib/utils";
 
 import { RunStatusBadge } from "./RunStatusBadge";
 import type { CrucibleRun, CrucibleRunEvent } from "./types";
-
-// Number of lines shown before the "Show more" truncation kicks in.
-const TRUNCATE_LINES = 20;
 
 interface SessionChatViewProps {
   run: CrucibleRun;
@@ -370,16 +361,16 @@ function TextMessage({ content }: { content: string }) {
 }
 
 function ReasoningMessage({ content }: { content: string }) {
+  // Always shown — the agent's reasoning is real work and the user wants
+  // every step visible without clicking.
   return (
-    <details className="rounded-lg border border-dashed bg-muted/10 px-3 py-2">
-      <summary className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
-        <ChevronRightIcon className="h-3 w-3 transition-transform duration-150 group-open:rotate-90" />
-        <span className="italic">Thinking…</span>
-      </summary>
-      <div className="mt-2 border-t pt-2">
-        <MarkdownBubble text={content} dim />
+    <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/10 px-3 py-2">
+      <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+        <LightbulbIcon className="h-3 w-3" />
+        <span className="font-medium uppercase tracking-wider">Thinking</span>
       </div>
-    </details>
+      <MarkdownBubble text={content} dim />
+    </div>
   );
 }
 
@@ -403,12 +394,10 @@ function ToolCallMessage({ toolName, commandText }: { toolName: string; commandT
 }
 
 function ToolResultMessage({ output }: { output: string }) {
-  const [expanded, setExpanded] = useState(false);
-  const lines = useMemo(() => output.split("\n"), [output]);
-  const isTruncated = lines.length > TRUNCATE_LINES;
-  const shown = !isTruncated || expanded ? lines : lines.slice(0, TRUNCATE_LINES);
-  const hiddenCount = lines.length - shown.length;
-
+  // Always show the full output — no truncation, no click-to-expand.
+  // For extremely tall outputs we use an inner max-height + overflow-auto
+  // so one huge result doesn't dominate the viewport, but every line is
+  // still present and reachable with a scroll.
   if (!output.trim()) {
     return (
       <div className="ml-6 text-xs text-muted-foreground/70 italic">
@@ -417,23 +406,17 @@ function ToolResultMessage({ output }: { output: string }) {
     );
   }
 
+  const lineCount = output.split("\n").length;
+
   return (
-    <div className="ml-6 rounded-md border border-border/60 bg-background/50 px-3 py-2">
-      <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-muted-foreground">
+    <div className="ml-6 rounded-md border border-border/60 bg-background/50">
+      <div className="flex items-center justify-between border-b border-border/60 px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
         <span>→ result</span>
+        <span className="font-mono">{lineCount} lines</span>
       </div>
-      <pre className="overflow-x-auto font-mono text-xs leading-relaxed whitespace-pre-wrap">
-        {shown.join("\n")}
+      <pre className="max-h-[60vh] overflow-auto px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+        {output}
       </pre>
-      {isTruncated && (
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="mt-2 inline-flex cursor-pointer items-center gap-1 text-[11px] text-primary hover:underline"
-        >
-          {expanded ? "Show less" : `Show more (${hiddenCount} more lines)`}
-        </button>
-      )}
     </div>
   );
 }
