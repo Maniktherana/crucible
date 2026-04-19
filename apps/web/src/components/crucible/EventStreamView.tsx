@@ -1,0 +1,245 @@
+import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
+import { useState } from "react";
+
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import { cn } from "~/lib/utils";
+
+import { AgentBrowserPreview, detectAgentBrowserScreenshot } from "./AgentBrowserPreview";
+import { SessionChatView } from "./SessionChatView";
+import type { CrucibleRun, CrucibleRunEvent } from "./types";
+
+export type EventFilterMode = "all" | "tools" | "text" | "errors";
+export type EventViewMode = "timeline" | "chat";
+
+interface EventStreamViewProps {
+  run: CrucibleRun;
+  filterMode: EventFilterMode;
+  onFilterChange: (mode: EventFilterMode) => void;
+}
+
+type EventCategory = "tool" | "text" | "error" | "system";
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+export function categorizeEvent(event: CrucibleRunEvent): EventCategory {
+  if (event.type === "session.error" || event.type.endsWith(".error")) return "error";
+
+  if (event.type === "message.part.updated") {
+    const payload = asRecord(event.payload);
+    const partType = payload?.type;
+    if (partType === "tool-invocation" || partType === "tool-call" || partType === "tool-result") {
+      return "tool";
+    }
+    if (partType === "text" || partType === "reasoning") {
+      return "text";
+    }
+  }
+  return "system";
+}
+
+function formatRelativeTime(isoString: string): string {
+  const t = new Date(isoString).getTime();
+  if (Number.isNaN(t)) return "";
+  const diff = Date.now() - t;
+  if (diff < 0) return "just now";
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 5) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function isSpawnSubtask(event: CrucibleRunEvent): boolean {
+  const summary = event.summary?.toLowerCase?.() ?? "";
+  if (summary.includes("spawn-subtask") || summary.includes("spawn subtask")) return true;
+  const payload = asRecord(event.payload);
+  if (!payload) return false;
+  const toolName = (payload.toolName ?? payload.tool ?? payload.name) as unknown;
+  if (typeof toolName === "string" && toolName.toLowerCase().includes("spawn-subtask")) {
+    return true;
+  }
+  const input = asRecord(payload.input);
+  const command = input?.command;
+  return typeof command === "string" && command.includes("spawn-subtask");
+}
+
+function extractBashCommand(event: CrucibleRunEvent): string | null {
+  const payload = asRecord(event.payload);
+  if (!payload) return null;
+  const toolName = (payload.toolName ?? payload.tool ?? payload.name) as unknown;
+  const isBash =
+    typeof toolName === "string" &&
+    (toolName === "bash" || toolName === "shell" || toolName.endsWith("bash"));
+  const input = asRecord(payload.input);
+  const command = input?.command;
+  if (isBash && typeof command === "string") return command;
+  // Fall-through: sometimes the summary is like "bash: <cmd>"
+  if (event.summary?.startsWith?.("bash:")) {
+    return event.summary.slice("bash:".length).trim();
+  }
+  return null;
+}
+
+function EventCard({ event }: { event: CrucibleRunEvent }) {
+  const [expanded, setExpanded] = useState(false);
+  const category = categorizeEvent(event);
+  const bashCommand = category === "tool" ? extractBashCommand(event) : null;
+  const showAgentBrowser = detectAgentBrowserScreenshot(event);
+  const spawnSubtask = isSpawnSubtask(event);
+
+  return (
+    <div
+      className={cn(
+        "rounded-lg border bg-card/40 p-3 text-sm",
+        category === "error" && "border-red-500/40 bg-red-500/5",
+        category === "tool" && "border-blue-500/25 bg-blue-500/5",
+        spawnSubtask && "border-purple-500/40 bg-purple-500/5",
+      )}
+    >
+      {/* Header */}
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-muted-foreground">{formatRelativeTime(event.at)}</span>
+        <Badge variant="secondary" size="sm" className="font-mono text-[10px]">
+          {event.type}
+        </Badge>
+        {spawnSubtask && (
+          <Badge size="sm" className="bg-purple-500/20 text-purple-300 text-[10px]">
+            spawn-subtask
+          </Badge>
+        )}
+        {category === "error" && (
+          <Badge size="sm" variant="destructive" className="text-[10px]">
+            error
+          </Badge>
+        )}
+      </div>
+
+      {/* Summary */}
+      {event.summary && (
+        <p className="mt-1.5 break-words whitespace-pre-wrap text-sm leading-snug">
+          {event.summary}
+        </p>
+      )}
+
+      {/* Bash code block */}
+      {bashCommand && (
+        <pre className="mt-2 overflow-x-auto rounded bg-background p-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+          <span className="text-muted-foreground">$ </span>
+          {bashCommand}
+        </pre>
+      )}
+
+      {/* Agent-browser preview */}
+      {showAgentBrowser && <AgentBrowserPreview event={event} />}
+
+      {/* Expandable raw payload */}
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="mt-2 inline-flex cursor-pointer items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+      >
+        {expanded ? (
+          <ChevronDownIcon className="h-3 w-3" />
+        ) : (
+          <ChevronRightIcon className="h-3 w-3" />
+        )}
+        {expanded ? "Hide" : "Show"} raw payload
+      </button>
+      {expanded && (
+        <pre className="mt-1 max-h-48 overflow-auto rounded bg-background p-2 font-mono text-[11px] leading-relaxed">
+          {JSON.stringify(event.payload, null, 2)}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+const FILTERS: { id: EventFilterMode; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "tools", label: "Tools" },
+  { id: "text", label: "Text" },
+  { id: "errors", label: "Errors" },
+];
+
+export function EventStreamView({ run, filterMode, onFilterChange }: EventStreamViewProps) {
+  const [viewMode, setViewMode] = useState<EventViewMode>("timeline");
+
+  const filteredEvents = run.events.filter((event) => {
+    if (filterMode === "all") return true;
+    const category = categorizeEvent(event);
+    if (filterMode === "tools") return category === "tool";
+    if (filterMode === "text") return category === "text";
+    if (filterMode === "errors") return category === "error";
+    return true;
+  });
+
+  return (
+    <div className="space-y-3">
+      {/* Filter + view mode bar */}
+      <div className="flex flex-wrap items-center gap-1">
+        <span className="mr-1 text-xs text-muted-foreground">Filter:</span>
+        {FILTERS.map((f) => (
+          <Button
+            key={f.id}
+            size="xs"
+            variant={filterMode === f.id ? "default" : "ghost"}
+            className="text-xs"
+            onClick={() => onFilterChange(f.id)}
+          >
+            {f.label}
+          </Button>
+        ))}
+
+        <span className="ml-2 h-4 w-px bg-border" />
+
+        <Button
+          size="xs"
+          variant={viewMode === "timeline" ? "default" : "ghost"}
+          className="text-xs"
+          onClick={() => setViewMode("timeline")}
+        >
+          Timeline
+        </Button>
+        <Button
+          size="xs"
+          variant={viewMode === "chat" ? "default" : "ghost"}
+          className="text-xs"
+          onClick={() => setViewMode("chat")}
+        >
+          Chat
+        </Button>
+
+        <span className="ml-auto text-xs text-muted-foreground">
+          {filteredEvents.length} / {run.events.length} events
+        </span>
+      </div>
+
+      {run.error && (
+        <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-400">
+          <div className="font-semibold">Run error</div>
+          <p className="mt-1 whitespace-pre-wrap">{run.error}</p>
+        </div>
+      )}
+
+      {viewMode === "chat" ? (
+        <SessionChatView events={filteredEvents} />
+      ) : filteredEvents.length === 0 ? (
+        <div className="rounded-lg border border-dashed p-6 text-center text-xs text-muted-foreground">
+          No events yet.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {filteredEvents.map((event) => (
+            <EventCard key={event.id} event={event} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
