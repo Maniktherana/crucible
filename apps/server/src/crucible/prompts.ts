@@ -86,6 +86,38 @@ export interface TaskPromptParams {
 // ==============================
 
 /**
+ * Narration preamble injected into both the manager and task prompts. The
+ * operator is watching the chat stream in real time — if the agent goes
+ * silent for multiple tool calls, the run looks dead even though it's
+ * working. Forcing a short text part before every action keeps the
+ * observability surface legible.
+ */
+const NARRATION_PREAMBLE = `## NARRATE YOUR WORK (operator is watching live)
+
+A human operator is watching every event you emit in a live chat view.
+Silence between tool calls reads as "the agent is stuck". To keep the run
+observable:
+
+1. Before EVERY tool call, emit ONE short sentence in plain text saying
+   what you're about to do and why. Example:
+   "Reading .crucible/agents.md to learn the repo conventions."
+   then run the bash/read/edit tool.
+
+2. After a tool returns, if the result changed your plan or surfaced
+   something non-obvious, emit ONE sentence summarizing what you learned
+   before the next action.
+
+3. When you hit a non-trivial decision (which file to touch, which
+   approach to take, whether a failure is fatal or recoverable), say it
+   out loud in 2-3 sentences BEFORE acting.
+
+This is not optional flavor. A run with good narration and a run with
+bad output quality are both judged as failures — both are unobservable.
+Keep each narration beat to 1-3 sentences; do not monologue.
+
+`;
+
+/**
  * Read-only readiness checks the manager runs BEFORE decomposing the issue.
  *
  * Embedded verbatim into the manager prompt (after the initialization gate)
@@ -366,6 +398,10 @@ if ! grep -q '^\\.crucible/progress/' .gitignore 2>/dev/null; then
   # aggregate .crucible/progress.json stays tracked.
   printf '.crucible/progress/\\n' >> .gitignore
 fi
+if ! grep -q '^\\.crucible/screenshots/' .gitignore 2>/dev/null; then
+  # Task agents save before/after screenshots here for the chat UI.
+  printf '.crucible/screenshots/\\n' >> .gitignore
+fi
 \`\`\`
 
 ### Step 8 - Commit to \`${params.defaultBranch}\`
@@ -439,7 +475,7 @@ export function buildManagerPrompt(params: ManagerPromptParams): string {
   const forbidden = FORBIDDEN_TOOL_LIST;
   const allowed = ALLOWED_READONLY_BASH_LIST;
 
-  return `# ==========================================================
+  return `${NARRATION_PREAMBLE}# ==========================================================
 # MANAGER AGENT - ABSOLUTE RULE
 # You are FORBIDDEN from editing, creating, or deleting files.
 # You are FORBIDDEN from writing code.
@@ -509,11 +545,13 @@ Anything not on the allow-list above is forbidden. When in doubt, spawn a subtas
 
 ### spawn-subtask - the only way to produce work
 
-Spawns a new specialist agent in a fresh git worktree on a fresh branch. Always pass \`--parent-run-id ${params.runId}\` so the child run is linked to this manager run.
+Spawns a new specialist agent in a fresh git worktree on a fresh branch. Always pass \`--parent-run-id ${params.runId}\` AND \`--issue-number ${params.issueNumber}\` so the child (a) is linked to this manager run and (b) receives the full task prompt (repo init check, quality gates, PR mandate).
 
 \`\`\`bash
-${params.spawnCommand} --parent-run-id ${params.runId} --repo ${params.repo} "<detailed prompt for the subtask>"
+${params.spawnCommand} --parent-run-id ${params.runId} --issue-number ${params.issueNumber} --repo ${params.repo} "<detailed prompt for the subtask>"
 \`\`\`
+
+\`--issue-number\` is **mandatory**. Without it, the child agent gets a bare prompt and will not know that the worktree is already bootstrapped — it may redo \`bun install\` or skip the PR step.
 
 The prompt you pass to \`spawn-subtask\` is what the child agent will see. It must be self-contained. Include:
 
@@ -673,7 +711,7 @@ export function buildTaskPrompt(params: TaskPromptParams): string {
   const agentBrowserBlock = params.agentBrowserAvailable ? formatAgentBrowserTaskBlock() : "";
   const progressJsonTemplate = formatProgressJsonTemplate(params);
 
-  return `# Crucible Specialist Task
+  return `${NARRATION_PREAMBLE}# Crucible Specialist Task
 
 You are a specialist software engineer. You have exactly one focused task to complete. Finish it, verify it, commit it, record progress, **and open a PR**.
 
@@ -758,23 +796,56 @@ You are already on branch \`${params.taskBranch}\` in worktree \`${params.repoPa
 
 Make the minimum change required to satisfy the task. Do not touch unrelated files.
 
-### Step 5 - Test with agent-browser (UI changes only)
+### Step 4.5 - Detect whether your change touches web UI
+
+Run this check and capture the result:
+
+\`\`\`bash
+cd ${params.repoPath}
+TOUCHED_WEB=$(git diff --name-only HEAD | grep -E '\\.(tsx?|jsx?|vue|astro|svelte|css|scss|sass|less|html)$|(^|/)(components|pages|app|routes|src/ui|src/views)/' || true)
+echo "TOUCHED_WEB=$TOUCHED_WEB"
+\`\`\`
+
+If \`TOUCHED_WEB\` is non-empty, Step 5 (agent-browser) is **MANDATORY** and non-negotiable. You must take at least one screenshot and emit a \`SCREENSHOT_SAVED:\` marker line. Skipping Step 5 when \`TOUCHED_WEB\` is non-empty is a run failure.
+
+If \`TOUCHED_WEB\` is empty, you may skip Step 5.
+
+### Step 5 - Screenshot the change with agent-browser (MANDATORY when TOUCHED_WEB is non-empty)
+
+\`agent-browser\` is ${params.agentBrowserAvailable ? "" : "NOT "}available on this machine.
 
 ${
   params.agentBrowserAvailable
-    ? `If your change affects the UI, verify it with agent-browser. Dev-server URL is documented in \`.crucible/agents.md\`.
+    ? `Before you begin, create the screenshots directory:
 
 \`\`\`bash
-# Start the dev server in the background using the command from agents.md,
-# then (once it is listening):
-agent-browser open <dev-server-url>
+mkdir -p ${params.repoPath}/.crucible/screenshots
+\`\`\`
+
+Start the dev server using the command documented in \`.crucible/agents.md\` (run it in the background so it does not block the shell). Wait a couple of seconds for it to start listening, then:
+
+\`\`\`bash
+# BEFORE - capture the unchanged page (if applicable; skip if this is a net-new route)
+agent-browser open <dev-server-url-from-agents.md>
+agent-browser screenshot ${params.repoPath}/.crucible/screenshots/${params.runId}-before.png
+echo "SCREENSHOT_SAVED: ${params.repoPath}/.crucible/screenshots/${params.runId}-before.png"
+
+# Interact as needed using refs from the snapshot
 agent-browser snapshot -ic
-agent-browser screenshot ${params.repoPath}/.crucible/progress/screenshot-${params.runId}.png
+# agent-browser click @e1
+# agent-browser fill @e2 "example"
+
+# AFTER - capture the changed page
+agent-browser screenshot ${params.repoPath}/.crucible/screenshots/${params.runId}-after.png
+echo "SCREENSHOT_SAVED: ${params.repoPath}/.crucible/screenshots/${params.runId}-after.png"
+
 agent-browser close
 \`\`\`
 
-Reference the screenshot path in your PR body. If the task is not UI-related, skip this step.`
-    : "The agent-browser CLI is not available on this machine. Verify UI changes via the project's own test suite or manual reasoning."
+**The \`SCREENSHOT_SAVED:\` lines are mandatory.** The orchestrator parses them to ingest screenshots into the Crucible UI. Without a \`SCREENSHOT_SAVED:\` line, the UI will not show your screenshot. The marker must be on its own line, with that literal prefix, followed by an absolute path. Emit it AFTER every successful \`agent-browser screenshot\` call.
+
+At minimum, one \`-after.png\` screenshot is required when \`TOUCHED_WEB\` is non-empty. A \`-before.png\` is recommended but not mandatory for net-new UI.`
+    : `The agent-browser CLI is not installed here. If your change affects web UI, note that in the PR body and request the reviewer verify visually. Skip this step.`
 }
 
 ### Step 6 - Run quality gates
@@ -837,7 +908,7 @@ gh pr create \\
 - <how you verified the change>${
     params.agentBrowserAvailable
       ? `
-- Screenshot: \`.crucible/progress/screenshot-${params.runId}.png\` (local artifact)`
+- Screenshots: \`.crucible/screenshots/${params.runId}-before.png\`, \`.crucible/screenshots/${params.runId}-after.png\` (surfaced in the Crucible UI)`
       : ""
   }"
 \`\`\`
@@ -868,6 +939,13 @@ if [ -z "$PR_URL" ] || [ "$PR_URL" = "null" ]; then
   exit 1
 fi
 echo "FINAL_PR_URL: $PR_URL"
+
+# Web-change screenshot gate: if TOUCHED_WEB was non-empty, require at least one SCREENSHOT_SAVED marker
+if [ -n "$TOUCHED_WEB" ]; then
+  # Check our own recent output (the agent should have emitted these lines above)
+  # If you realize you did not screenshot, return to Step 5 NOW. Do not proceed.
+  echo "NOTE: TOUCHED_WEB was non-empty; ensure you emitted at least one SCREENSHOT_SAVED: line for this run."
+fi
 \`\`\`
 
 After this command succeeds, your FINAL turn of output must end with the marker. For example:
@@ -904,6 +982,7 @@ If you're unsure whether you're done, check the exit criterion at the top of thi
 - [ ] Repo quality gates pass (Step 6).
 - [ ] Change is committed; working tree clean (Step 7).
 - [ ] Per-run progress file written (Step 8).
+- [ ] For web changes: \`SCREENSHOT_SAVED: <path>\` emitted for each screenshot (Step 5).
 - [ ] \`git push -u origin ${params.taskBranch}\` succeeded (Step 9).
 - [ ] \`gh pr create\` returned a PR URL (Step 9).
 - [ ] \`gh pr list --head ${params.taskBranch}\` confirmed the PR (Step 10).
@@ -920,6 +999,7 @@ Before sending your final message, ask yourself:
 1. "Have I actually run \`gh pr create\` (or confirmed an existing PR via \`gh pr view\`)?" If no, **DO NOT SEND THE MESSAGE YET**. Go run it.
 2. "Does the last non-empty line of what I am about to send start with \`FINAL_PR_URL: https://github.com/${params.repo}/pull/\`?" If no, **DO NOT SEND THE MESSAGE YET**. Emit Step 10 first.
 3. "Is the URL after \`FINAL_PR_URL:\` a real URL I got from \`gh pr list\` or \`gh pr create\`?" If no (you made it up, it's a placeholder, or the command output was empty), **DO NOT SEND THE MESSAGE YET**. Fix the underlying issue and re-run Step 10.
+4. "If \`git diff --name-only HEAD\` matches the web pattern (tsx/jsx/vue/astro/svelte/css/html or components/pages/app/routes directories), did I emit at least one \`SCREENSHOT_SAVED:\` line?" If TOUCHED_WEB was non-empty and no \`SCREENSHOT_SAVED:\` line is in my output, **DO NOT SEND THE MESSAGE YET**. Return to Step 5, take a screenshot, emit the marker, then continue.
 
 If you are ever tempted to respond "the change is complete, but I couldn't open a PR because X", your response is wrong. The correct response is always to debug X and open the PR. Running out of budget, hitting a transient network blip, or finding an already-open PR are all recoverable. Real success requires the \`FINAL_PR_URL:\` marker.
 `;
