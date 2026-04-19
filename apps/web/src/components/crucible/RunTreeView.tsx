@@ -27,7 +27,18 @@ function truncate(text: string, limit: number): string {
   return cleaned.length > limit ? `${cleaned.slice(0, limit)}…` : cleaned;
 }
 
+function sumTokens(run: CrucibleRun): number {
+  return run.events.reduce((sum, e) => sum + (e.inputTokens ?? 0) + (e.outputTokens ?? 0), 0);
+}
+
+function formatTokenCount(count: number): string {
+  if (count >= 1000) return `${(count / 1000).toFixed(1)}k`;
+  return String(count);
+}
+
 function RunTreeNode({ run, label, isSelected, onClick, depth, isLast }: RunTreeNodeProps) {
+  const totalTokens = sumTokens(run);
+
   return (
     <button
       type="button"
@@ -51,6 +62,11 @@ function RunTreeNode({ run, label, isSelected, onClick, depth, isLast }: RunTree
       <RunStatusBadge status={run.status} />
       <span className="font-medium">{label}</span>
       <span className="truncate text-xs text-muted-foreground">{truncate(run.prompt, 80)}</span>
+      {totalTokens > 0 && (
+        <span className="shrink-0 text-[10px] text-muted-foreground">
+          {formatTokenCount(totalTokens)} tokens
+        </span>
+      )}
       {run.prUrl && (
         <Badge variant="secondary" size="sm" className="ml-auto shrink-0 text-[10px]">
           <ExternalLinkIcon className="h-2.5 w-2.5" />

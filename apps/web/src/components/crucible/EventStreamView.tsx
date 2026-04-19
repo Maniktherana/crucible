@@ -118,6 +118,11 @@ function EventCard({ event }: { event: CrucibleRunEvent }) {
             error
           </Badge>
         )}
+        {(event.inputTokens != null || event.outputTokens != null) && (
+          <Badge variant="secondary" size="sm" className="font-mono text-[10px]">
+            {event.inputTokens ?? 0}&rarr;{event.outputTokens ?? 0} tokens
+          </Badge>
+        )}
       </div>
 
       {/* Summary */}
@@ -181,6 +186,16 @@ export function EventStreamView({ run, filterMode, onFilterChange }: EventStream
 
   return (
     <div className="space-y-3">
+      {/* Duration */}
+      {run.durationMs != null && (
+        <div className="text-xs text-muted-foreground">
+          Duration:{" "}
+          {run.durationMs < 60_000
+            ? `${(run.durationMs / 1000).toFixed(1)}s`
+            : `${(run.durationMs / 60_000).toFixed(1)}m`}
+        </div>
+      )}
+
       {/* Filter + view mode bar */}
       <div className="flex flex-wrap items-center gap-1">
         <span className="mr-1 text-xs text-muted-foreground">Filter:</span>

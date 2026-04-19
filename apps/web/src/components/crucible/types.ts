@@ -21,6 +21,8 @@ export interface CrucibleRunEvent {
   type: string;
   summary: string;
   payload: unknown;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 export interface CrucibleRun {
@@ -39,6 +41,10 @@ export interface CrucibleRun {
   updatedAt: string;
   prUrl?: string;
   error?: string;
+  langfuseTraceId?: string;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
 }
 
 export type KanbanColumnId = "todo" | "in_progress" | "done";

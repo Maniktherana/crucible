@@ -176,6 +176,16 @@ export function CardDetailPanel({ card, onClose }: CardDetailPanelProps) {
               <span className="text-xs text-muted-foreground">#{card.issue.number}</span>
               <h2 className="truncate text-sm font-semibold">{card.issue.title}</h2>
               {managerRun && <RunStatusBadge status={managerRun.status} showLabel />}
+              {managerRun?.langfuseTraceId && (
+                <a
+                  href={`https://cloud.langfuse.com/project/cmo5hp4ig0060ad087u3nvi5d/traces/${managerRun.langfuseTraceId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-blue-400 hover:underline"
+                >
+                  Langfuse
+                </a>
+              )}
             </div>
             <div className="flex items-center gap-1">
               {card.issue.html_url && (

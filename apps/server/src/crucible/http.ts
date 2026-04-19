@@ -22,12 +22,23 @@ import {
 } from "../provider/opencodeRuntime.ts";
 import { buildManagerPrompt, buildTaskPrompt } from "./prompts.ts";
 import { EVAL_TASKS, checkEvalOutcome } from "./eval.ts";
+import {
+  initLangfuse,
+  isTracingEnabled,
+  flushTracing,
+  startObservation,
+  type LangfuseSpan,
+} from "./tracing.ts";
+
+// Module-scope init — async but fire-and-forget (tracing is best-effort).
+void initLangfuse();
 
 const MAX_STORED_EVENTS = 200;
 const MAX_FILE_PREVIEW_CHARS = 2_000;
 const REPO_ROOT = Path.resolve(Path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 const SPAWN_SUBTASK_SCRIPT_PATH = Path.join(REPO_ROOT, "scripts", "spawn-subtask.ts");
 const SUBTASK_STATUS_SCRIPT_PATH = Path.join(REPO_ROOT, "scripts", "subtask-status.ts");
+const CRUCIBLE_LOG_DIR = Path.join(REPO_ROOT, "repos", ".crucible-logs");
 
 type CrucibleRunType = "manager" | "task";
 type CrucibleRunStatus = "starting" | "running" | "completed" | "error";
@@ -61,6 +72,8 @@ interface CrucibleRunEvent {
   readonly type: string;
   readonly summary: string;
   readonly payload: unknown;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 interface CrucibleRunRecord {
@@ -88,6 +101,12 @@ interface CrucibleRunRecord {
   error?: string;
   client?: OpencodeClient;
   server?: OpenCodeServerConnection;
+  langfuseTraceId?: string;
+  langfuseSpanId?: string;
+  langfuseSpan?: LangfuseSpan;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
 }
 
 interface CrucibleStore {
@@ -151,15 +170,72 @@ function shellQuote(value: string): string {
 }
 
 function pushRunEvent(run: CrucibleRunRecord, event: Omit<CrucibleRunEvent, "id" | "at">): void {
-  run.events.push({
-    id: randomUUID(),
-    at: nowIso(),
+  const id = randomUUID();
+  const at = nowIso();
+
+  // Extract token usage from the event payload
+  const usage = extractUsage(event.payload);
+
+  const eventObj: CrucibleRunEvent = {
+    id,
+    at,
     ...event,
-  });
+    ...(usage?.inputTokens !== undefined ? { inputTokens: usage.inputTokens } : {}),
+    ...(usage?.outputTokens !== undefined ? { outputTokens: usage.outputTokens } : {}),
+  };
+
+  run.events.push(eventObj);
   if (run.events.length > MAX_STORED_EVENTS) {
     run.events.splice(0, run.events.length - MAX_STORED_EVENTS);
   }
   run.updatedAt = nowIso();
+
+  // Best-effort NDJSON log to disk
+  void FS.mkdir(CRUCIBLE_LOG_DIR, { recursive: true })
+    .then(() =>
+      FS.appendFile(
+        Path.join(CRUCIBLE_LOG_DIR, `${run.id}.ndjson`),
+        JSON.stringify({ ...eventObj, runId: run.id }) + "\n",
+      ),
+    )
+    .catch(() => {
+      /* best-effort */
+    });
+
+  // Langfuse: log event as generation (for LLM events) or event (for others)
+  if (run.langfuseSpan) {
+    try {
+      if (event.type === "message.part.updated" && usage) {
+        const gen = run.langfuseSpan.startObservation(
+          event.summary.slice(0, 100),
+          {
+            metadata: { eventId: id },
+            ...(usage.inputTokens !== undefined || usage.outputTokens !== undefined
+              ? {
+                  usageDetails: {
+                    ...(usage.inputTokens !== undefined ? { promptTokens: usage.inputTokens } : {}),
+                    ...(usage.outputTokens !== undefined
+                      ? { completionTokens: usage.outputTokens }
+                      : {}),
+                  },
+                }
+              : {}),
+          },
+          { asType: "generation" },
+        );
+        gen.end();
+      } else {
+        // Events are auto-ended by Langfuse
+        run.langfuseSpan.startObservation(
+          event.type,
+          { metadata: { summary: event.summary } },
+          { asType: "event" },
+        );
+      }
+    } catch {
+      /* tracing should never break the run */
+    }
+  }
 }
 
 function setRunStatus(run: CrucibleRunRecord, status: CrucibleRunStatus, error?: string): void {
@@ -167,9 +243,34 @@ function setRunStatus(run: CrucibleRunRecord, status: CrucibleRunStatus, error?:
   run.updatedAt = nowIso();
   if (error !== undefined) {
     run.error = error;
-    return;
+  } else {
+    delete run.error;
   }
-  delete run.error;
+
+  // Timing
+  if (status === "running" && !run.startedAt) {
+    run.startedAt = nowIso();
+  }
+  if (status === "completed" || status === "error") {
+    run.completedAt = nowIso();
+    if (run.startedAt) {
+      run.durationMs = new Date(run.completedAt).getTime() - new Date(run.startedAt).getTime();
+    }
+
+    // End Langfuse span on terminal status
+    if (run.langfuseSpan) {
+      try {
+        run.langfuseSpan.update({ output: { status, error: run.error ?? null } });
+        run.langfuseSpan.end();
+      } catch {
+        /* tracing should never break the run */
+      }
+    }
+    // Flush if this is the top-level manager run completing
+    if (run.type === "manager" && !run.parentRunId && run.langfuseTraceId) {
+      void flushTracing();
+    }
+  }
 }
 
 function summarizeEvent(event: unknown): { readonly type: string; readonly summary: string } {
@@ -266,6 +367,31 @@ function summarizeEvent(event: unknown): { readonly type: string; readonly summa
   }
 }
 
+function extractUsage(event: unknown): { inputTokens?: number; outputTokens?: number } | null {
+  if (!event || typeof event !== "object") return null;
+  const obj = event as Record<string, unknown>;
+  const usage =
+    (typeof obj.usage === "object" && obj.usage) ||
+    (typeof obj.properties === "object" && obj.properties
+      ? (obj.properties as Record<string, unknown>).usage
+      : null) ||
+    (typeof obj.message === "object" && obj.message
+      ? (obj.message as Record<string, unknown>).usage
+      : null) ||
+    null;
+  if (!usage || typeof usage !== "object") return null;
+  const u = usage as Record<string, unknown>;
+  const inputTokens = (u.inputTokens ?? u.input_tokens ?? u.prompt_tokens) as number | undefined;
+  const outputTokens = (u.outputTokens ?? u.output_tokens ?? u.completion_tokens) as
+    | number
+    | undefined;
+  if (inputTokens === undefined && outputTokens === undefined) return null;
+  return {
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+  };
+}
+
 function addChildRun(parent: CrucibleRunRecord, child: CrucibleRunRecord): void {
   if (!parent.childRunIds.includes(child.id)) {
     parent.childRunIds.push(child.id);
@@ -344,6 +470,10 @@ async function serializeRun(run: CrucibleRunRecord) {
     spawnNote: run.spawnNote ?? null,
     events: run.events,
     fileCheck: await readFileCheck(run),
+    langfuseTraceId: run.langfuseTraceId ?? null,
+    startedAt: run.startedAt ?? null,
+    completedAt: run.completedAt ?? null,
+    durationMs: run.durationMs ?? null,
   };
 }
 
@@ -540,6 +670,45 @@ async function startRun(
   }
 
   crucibleStore.runs.set(run.id, run);
+
+  // Langfuse tracing — create trace (top-level) or span (child)
+  if (isTracingEnabled()) {
+    try {
+      if (run.type === "manager" && !run.parentRunId) {
+        const span = startObservation(`Issue #${run.issueNumber ?? 0}: ${run.title}`, {
+          input: { repo: run.repo, issueNumber: run.issueNumber, prompt: run.prompt },
+          metadata: { runId: run.id, type: run.type },
+        });
+        run.langfuseTraceId = span.traceId;
+        run.langfuseSpanId = span.id;
+        run.langfuseSpan = span;
+      } else if (run.parentRunId) {
+        const parent = crucibleStore.runs.get(run.parentRunId);
+        if (parent?.langfuseTraceId && parent.langfuseSpanId) {
+          const span = startObservation(
+            `${run.type}: ${run.title || run.prompt.slice(0, 80)}`,
+            {
+              input: { prompt: run.prompt },
+              metadata: { runId: run.id, type: run.type, parentRunId: run.parentRunId },
+            },
+            {
+              parentSpanContext: {
+                traceId: parent.langfuseTraceId,
+                spanId: parent.langfuseSpanId,
+                traceFlags: 1,
+              },
+            },
+          );
+          run.langfuseTraceId = span.traceId;
+          run.langfuseSpanId = span.id;
+          run.langfuseSpan = span;
+        }
+      }
+    } catch {
+      /* tracing should never break the run */
+    }
+  }
+
   await FS.writeFile(Path.join(directory, ".crucible-run-id"), `${run.id}\n`, "utf8");
   pushRunEvent(run, {
     type: "run.created",
@@ -895,6 +1064,61 @@ export const crucibleRunDeleteRouteLayer = HttpRouter.add(
     }
 
     return HttpServerResponse.jsonUnsafe({ deleted: ids.size }, { status: 200 });
+  }).pipe(
+    Effect.catchTag("AuthError", respondToAuthError),
+    Effect.catchTag("CrucibleHttpError", handleCrucibleHttpError),
+  ),
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/crucible/runs/:runId/log — serve historical NDJSON event log
+// ---------------------------------------------------------------------------
+
+export const crucibleRunLogRouteLayer = HttpRouter.add(
+  "GET",
+  "/api/crucible/runs/:runId/log",
+  Effect.gen(function* () {
+    yield* requireCrucibleAccess;
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const url = HttpServerRequest.toURL(request);
+    if (Option.isNone(url)) {
+      return yield* new CrucibleHttpError({ message: "Invalid request URL.", status: 400 });
+    }
+
+    // Path: /api/crucible/runs/:runId/log → segments[3] = runId
+    const segments = url.value.pathname.split("/").filter(Boolean);
+    const runId = segments[3];
+    if (!runId) {
+      return yield* new CrucibleHttpError({ message: "Run id is required.", status: 400 });
+    }
+
+    const events = yield* Effect.tryPromise({
+      try: async () => {
+        const logPath = Path.join(CRUCIBLE_LOG_DIR, `${decodeURIComponent(runId)}.ndjson`);
+        let raw: string;
+        try {
+          raw = await FS.readFile(logPath, "utf8");
+        } catch {
+          return [];
+        }
+        return raw
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => {
+            try {
+              return JSON.parse(line) as unknown;
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean);
+      },
+      catch: (cause) =>
+        new CrucibleHttpError({ message: "Failed to read log.", status: 500, cause }),
+    });
+
+    return HttpServerResponse.jsonUnsafe({ events }, { status: 200 });
   }).pipe(
     Effect.catchTag("AuthError", respondToAuthError),
     Effect.catchTag("CrucibleHttpError", handleCrucibleHttpError),
