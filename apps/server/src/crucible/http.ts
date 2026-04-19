@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import * as FS from "node:fs/promises";
+import { readFileSync, existsSync } from "node:fs";
 import * as OS from "node:os";
 import * as Path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +30,12 @@ import {
   startObservation,
   type LangfuseSpan,
 } from "./tracing.ts";
+import {
+  finalizeRunTrace,
+  initRunTraceState,
+  reduceToLangfuse,
+  type RunTraceState,
+} from "./langfuseReducer.ts";
 import {
   initCrucibleDb,
   loadAllRuns,
@@ -117,6 +124,7 @@ interface CrucibleRunRecord {
   langfuseTraceId?: string;
   langfuseSpanId?: string;
   langfuseSpan?: LangfuseSpan;
+  trace: RunTraceState;
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;
@@ -142,20 +150,63 @@ if (!globalCrucibleStore.__t3CrucibleStore) {
 const DB_PATH = Path.join(REPO_ROOT, ".crucible-data", "crucible.db");
 initCrucibleDb(DB_PATH);
 
+/**
+ * Replay the per-run NDJSON event log back into an in-memory event array so
+ * that runs which were live before a server restart still show their chat
+ * history. Tolerant of missing files and malformed lines. Caps at
+ * MAX_STORED_EVENTS (keeps the tail).
+ */
+function replayEventsFromLog(runId: string): CrucibleRunEvent[] {
+  const logPath = Path.join(CRUCIBLE_LOG_DIR, `${runId}.ndjson`);
+  if (!existsSync(logPath)) return [];
+  try {
+    const raw = readFileSync(logPath, "utf8");
+    const lines = raw.split("\n").filter((l) => l.length > 0);
+    const events: CrucibleRunEvent[] = [];
+    // Replay only the tail — older events are already dropped by the live
+    // trimmer so reloading more than the cap wastes memory and scroll.
+    const start = Math.max(0, lines.length - MAX_STORED_EVENTS);
+    for (let i = start; i < lines.length; i++) {
+      const line = lines[i]!;
+      try {
+        const parsed = JSON.parse(line) as CrucibleRunEvent & { runId?: string };
+        if (typeof parsed.id !== "string" || typeof parsed.type !== "string") continue;
+        // Strip the runId field we added when writing; it's not part of the
+        // event record.
+        const { runId: _drop, ...event } = parsed;
+        events.push(event as CrucibleRunEvent);
+      } catch {
+        // Skip malformed line; don't let one bad write poison the replay.
+      }
+    }
+    return events;
+  } catch {
+    return [];
+  }
+}
+
 if (crucibleStore.runs.size === 0) {
   const persistedRuns = loadAllRuns();
+  let totalReplayed = 0;
   for (const run of persistedRuns) {
+    const events = replayEventsFromLog(run.id);
+    totalReplayed += events.length;
     crucibleStore.runs.set(run.id, {
       ...run,
       type: run.type as CrucibleRunType,
       status: run.status as CrucibleRunStatus,
-      events: [],
+      events,
       abortController: new AbortController(),
       childRunIds: [...run.childRunIds],
+      // Re-created runs don't have live Langfuse spans; initialize an empty
+      // trace state so the reducer can no-op safely.
+      trace: initRunTraceState(),
     });
   }
   if (persistedRuns.length > 0) {
-    console.info(`[crucible] Reloaded ${persistedRuns.length} run(s) from SQLite.`);
+    console.info(
+      `[crucible] Reloaded ${persistedRuns.length} run(s) from SQLite, ${totalReplayed} event(s) from NDJSON logs.`,
+    );
   }
 }
 
@@ -207,7 +258,7 @@ function pushRunEvent(run: CrucibleRunRecord, event: Omit<CrucibleRunEvent, "id"
   const id = randomUUID();
   const at = nowIso();
 
-  // Extract token usage from the event payload
+  // Extract token usage from the event payload (surfaced in the UI event row)
   const usage = extractUsage(event.payload);
 
   const eventObj: CrucibleRunEvent = {
@@ -243,40 +294,13 @@ function pushRunEvent(run: CrucibleRunRecord, event: Omit<CrucibleRunEvent, "id"
       /* best-effort */
     });
 
-  // Langfuse: log event as generation (for LLM events) or event (for others)
-  if (run.langfuseSpan) {
-    try {
-      if (event.type === "message.part.updated" && usage) {
-        const gen = run.langfuseSpan.startObservation(
-          event.summary.slice(0, 100),
-          {
-            metadata: { eventId: id },
-            ...(usage.inputTokens !== undefined || usage.outputTokens !== undefined
-              ? {
-                  usageDetails: {
-                    ...(usage.inputTokens !== undefined ? { promptTokens: usage.inputTokens } : {}),
-                    ...(usage.outputTokens !== undefined
-                      ? { completionTokens: usage.outputTokens }
-                      : {}),
-                  },
-                }
-              : {}),
-          },
-          { asType: "generation" },
-        );
-        gen.end();
-      } else {
-        // Events are auto-ended by Langfuse
-        run.langfuseSpan.startObservation(
-          event.type,
-          { metadata: { summary: event.summary } },
-          { asType: "event" },
-        );
-      }
-    } catch {
-      /* tracing should never break the run */
-    }
-  }
+  // Langfuse: route through the stateful reducer so we emit clean
+  // generations/tool spans instead of one observation per raw event.
+  reduceToLangfuse(run, {
+    type: event.type,
+    summary: event.summary,
+    payload: event.payload,
+  });
 }
 
 function setRunStatus(run: CrucibleRunRecord, status: CrucibleRunStatus, error?: string): void {
@@ -298,15 +322,15 @@ function setRunStatus(run: CrucibleRunRecord, status: CrucibleRunStatus, error?:
       run.durationMs = new Date(run.completedAt).getTime() - new Date(run.startedAt).getTime();
     }
 
-    // End Langfuse span on terminal status
-    if (run.langfuseSpan) {
-      try {
-        run.langfuseSpan.update({ output: { status, error: run.error ?? null } });
-        run.langfuseSpan.end();
-      } catch {
-        /* tracing should never break the run */
-      }
-    }
+    // Close any dangling tool spans / generation, stamp final trace output.
+    finalizeRunTrace(run, status, {
+      ...(run.error !== undefined ? { error: run.error } : {}),
+      ...(run.startedAt !== undefined ? { startedAt: run.startedAt } : {}),
+      ...(run.completedAt !== undefined ? { completedAt: run.completedAt } : {}),
+      ...(run.durationMs !== undefined ? { durationMs: run.durationMs } : {}),
+      childRunIds: run.childRunIds,
+    });
+
     // Flush if this is the top-level manager run completing
     if (run.type === "manager" && !run.parentRunId && run.langfuseTraceId) {
       void flushTracing();
@@ -765,6 +789,7 @@ async function startRun(
     abortController: new AbortController(),
     events: [],
     childRunIds: [],
+    trace: initRunTraceState(),
     ...(parentRunId !== undefined ? { parentRunId } : {}),
     ...(issueNumber !== undefined ? { issueNumber } : {}),
     ...(expectedFilePath !== undefined ? { expectedFilePath } : {}),
@@ -1477,6 +1502,118 @@ export const crucibleRunGetRouteLayer = HttpRouter.add(
     });
 
     return HttpServerResponse.jsonUnsafe(response, { status: 200 });
+  }).pipe(
+    Effect.catchTag("AuthError", respondToAuthError),
+    Effect.catchTag("CrucibleHttpError", handleCrucibleHttpError),
+  ),
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/crucible/runs/:runId/message — append a user message to a run
+// ---------------------------------------------------------------------------
+
+const CrucibleRunMessageInput = Schema.Struct({
+  text: Schema.String,
+});
+
+export const crucibleRunMessageRouteLayer = HttpRouter.add(
+  "POST",
+  "/api/crucible/runs/:runId/message",
+  Effect.gen(function* () {
+    yield* requireCrucibleAccess;
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const url = HttpServerRequest.toURL(request);
+    if (Option.isNone(url)) {
+      return yield* new CrucibleHttpError({
+        message: "Invalid request URL.",
+        status: 400,
+      });
+    }
+
+    // Path: /api/crucible/runs/:runId/message → segments[3] = runId
+    const runId = decodeURIComponent(url.value.pathname.split("/").at(-2) ?? "");
+    if (!runId) {
+      return yield* new CrucibleHttpError({
+        message: "Run id is required.",
+        status: 400,
+      });
+    }
+
+    const payload = yield* HttpServerRequest.schemaBodyJson(CrucibleRunMessageInput).pipe(
+      Effect.mapError(
+        (cause) =>
+          new CrucibleHttpError({
+            message: "Invalid message payload.",
+            status: 400,
+            cause,
+          }),
+      ),
+    );
+    const text = payload.text.trim();
+    if (!text) {
+      return yield* new CrucibleHttpError({
+        message: "Message text is required.",
+        status: 400,
+      });
+    }
+
+    const run = yield* Effect.tryPromise({
+      try: () => getRunOrThrow(runId),
+      catch: (cause) =>
+        cause instanceof CrucibleHttpError
+          ? cause
+          : new CrucibleHttpError({
+              message: "Failed to load Crucible run.",
+              status: 500,
+              cause,
+            }),
+    });
+
+    if (!run.client || !run.sessionId) {
+      return yield* new CrucibleHttpError({
+        message: "Run has no active OpenCode session to deliver the message to.",
+        status: 409,
+      });
+    }
+
+    if (run.status === "completed" || run.status === "error") {
+      return yield* new CrucibleHttpError({
+        message: `Run is ${run.status}; cannot queue new messages.`,
+        status: 409,
+      });
+    }
+
+    yield* Effect.tryPromise({
+      try: () =>
+        run.client!.session.promptAsync({
+          sessionID: run.sessionId!,
+          parts: [{ type: "text", text }],
+        }),
+      catch: (cause) =>
+        new CrucibleHttpError({
+          message: cause instanceof Error ? cause.message : "Failed to send message to session.",
+          status: 500,
+          cause,
+        }),
+    });
+
+    // Synthesize a local event so the UI sees the user message immediately,
+    // before opencode echoes it back through the stream.
+    pushRunEvent(run, {
+      type: "user.message.sent",
+      summary: text.length > 120 ? `${text.slice(0, 120)}…` : text,
+      payload: {
+        properties: {
+          part: {
+            type: "user-message",
+            text,
+            id: `user-${Date.now()}`,
+          },
+        },
+      },
+    });
+
+    return HttpServerResponse.jsonUnsafe({ ok: true }, { status: 202 });
   }).pipe(
     Effect.catchTag("AuthError", respondToAuthError),
     Effect.catchTag("CrucibleHttpError", handleCrucibleHttpError),

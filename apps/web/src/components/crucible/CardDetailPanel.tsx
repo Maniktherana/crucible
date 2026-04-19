@@ -9,6 +9,7 @@ import { ScrollArea } from "~/components/ui/scroll-area";
 import { Sheet, SheetPopup } from "~/components/ui/sheet";
 import { cn } from "~/lib/utils";
 
+import { CardChatComposer } from "./CardChatComposer";
 import { EventStreamView, type EventFilterMode } from "./EventStreamView";
 import { RunStatusBadge } from "./RunStatusBadge";
 import { RunTreeView } from "./RunTreeView";
@@ -584,6 +585,8 @@ export function CardDetailPanel({ card, onClose }: CardDetailPanelProps) {
                   </ScrollArea>
                 )}
               </div>
+
+              {viewMode === "chat" && <CardChatComposer run={selectedRun} />}
             </>
           )}
         </div>

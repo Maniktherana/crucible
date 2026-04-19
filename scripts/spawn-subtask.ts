@@ -30,6 +30,14 @@ type SpawnSubtaskOptions = {
   readonly baseDir?: string;
   readonly token?: string;
   readonly repo?: string;
+  /** Parent issue number — enables the rich buildTaskPrompt branch on the server. */
+  readonly issueNumber?: number;
+  /** Short subtask description that the manager wrote. Same as `prompt`; kept
+   *  separate so the server can inject it into `buildTaskPrompt`. */
+  readonly subtaskDescription?: string;
+  /** Branch the task worktree was created on — passed through to the task
+   *  prompt so Step 1–9 know where to push. */
+  readonly taskBranch?: string;
 };
 
 const argv = parseArgs({
@@ -45,6 +53,7 @@ const argv = parseArgs({
     token: { type: "string" },
     repo: { type: "string" },
     "repo-path": { type: "string" },
+    "issue-number": { type: "string" },
     initializer: { type: "boolean" },
     "no-worktree": { type: "boolean" },
     help: { type: "boolean", short: "h" },
@@ -70,6 +79,9 @@ function printUsage(): void {
       "",
       "Flags:",
       "  --repo-path <path>   Parent repo on disk (defaults to cwd).",
+      "  --issue-number <N>   Parent issue number — unlocks the rich task prompt",
+      "                       (init.sh + quality gates + PR). Also reads",
+      "                       CRUCIBLE_ISSUE_NUMBER from the environment.",
       "  --initializer        Run the Crucible initializer agent on a fresh branch",
       "                       `crucible/init-<uuid8>`. --prompt is inferred from the",
       "                       canonical initializer template.",
@@ -312,6 +324,16 @@ async function main(): Promise<void> {
     prompt = getPrompt(argv.positionals, argv.values.prompt);
   }
 
+  // Derive the fields that unlock the rich `buildTaskPrompt` branch on the
+  // server. Without all three (issueNumber + subtaskDescription + taskBranch)
+  // the server falls back to the raw prompt and the task agent never learns
+  // that the worktree is bootstrapped / where to push its branch.
+  const issueNumberRaw =
+    argv.values["issue-number"]?.trim() || process.env.CRUCIBLE_ISSUE_NUMBER?.trim();
+  const issueNumber = issueNumberRaw ? Number.parseInt(issueNumberRaw, 10) : undefined;
+  const issueNumberValid =
+    typeof issueNumber === "number" && Number.isFinite(issueNumber) ? issueNumber : undefined;
+
   const options: SpawnSubtaskOptions = {
     prompt,
     directory: plan.directory,
@@ -329,6 +351,10 @@ async function main(): Promise<void> {
         ? { token: process.env.T3CODE_BEARER_TOKEN.trim() }
         : {}),
     ...(repo ? { repo } : {}),
+    ...(!initializerMode && issueNumberValid !== undefined
+      ? { issueNumber: issueNumberValid, subtaskDescription: prompt }
+      : {}),
+    ...(!initializerMode && plan.worktreeBranch ? { taskBranch: plan.worktreeBranch } : {}),
   };
 
   const origin = await resolveOrigin(options);
@@ -353,6 +379,9 @@ async function main(): Promise<void> {
       expectedText: options.expectedText,
       parentRunId: options.parentRunId,
       repo: options.repo,
+      issueNumber: options.issueNumber,
+      subtaskDescription: options.subtaskDescription,
+      taskBranch: options.taskBranch,
       type: initializerMode ? "task" : "task",
       spawnCommand: initializerMode ? "spawn-subtask --initializer" : "spawn-subtask",
       spawnTool: "bash",

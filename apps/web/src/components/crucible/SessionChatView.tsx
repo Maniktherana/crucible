@@ -41,6 +41,7 @@ interface BaseMsg {
 }
 
 type ChatMessage =
+  | (BaseMsg & { kind: "user-message"; content: string })
   | (BaseMsg & { kind: "text"; content: string })
   | (BaseMsg & { kind: "reasoning"; content: string })
   | (BaseMsg & {
@@ -300,6 +301,14 @@ function parseMessages(events: CrucibleRunEvent[], childRunIds: string[]): ChatM
       continue;
     }
 
+    // ---- User mid-run messages (synthesized by the server on POST) ----
+    if (partType === "user-message") {
+      const content = typeof part.text === "string" ? part.text : "";
+      if (!content.trim()) continue;
+      upsert(key, { id: key, kind: "user-message", content, timestamp: event.at });
+      continue;
+    }
+
     // ---- Step markers ----
     if (partType === "step-start") {
       if (!keyToIndex.has(key)) stepCounter += 1;
@@ -524,6 +533,19 @@ function TextMessage({ content }: { content: string }) {
         Agent
       </Badge>
       <div className="min-w-0 flex-1 rounded-lg bg-muted/30 px-3 py-2">
+        <MarkdownBubble text={content} />
+      </div>
+    </div>
+  );
+}
+
+function UserMessage({ content }: { content: string }) {
+  return (
+    <div className="flex flex-row-reverse gap-2">
+      <Badge size="sm" className="mt-0.5 shrink-0 bg-orange-500/20 text-orange-300 text-[10px]">
+        You
+      </Badge>
+      <div className="min-w-0 max-w-[85%] rounded-lg border border-orange-500/30 bg-orange-500/5 px-3 py-2">
         <MarkdownBubble text={content} />
       </div>
     </div>
@@ -893,6 +915,8 @@ function ChatMessageRow({
   inlineBashScreenshotPaths: Set<string>;
 }) {
   switch (message.kind) {
+    case "user-message":
+      return <UserMessage content={message.content} />;
     case "text":
       return <TextMessage content={message.content} />;
     case "reasoning":
