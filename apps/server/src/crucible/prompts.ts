@@ -439,7 +439,14 @@ export function buildManagerPrompt(params: ManagerPromptParams): string {
   const forbidden = FORBIDDEN_TOOL_LIST;
   const allowed = ALLOWED_READONLY_BASH_LIST;
 
-  return `# STOP. READ THESE RULES BEFORE YOU DO ANYTHING ELSE.
+  return `# ==========================================================
+# MANAGER AGENT - ABSOLUTE RULE
+# You are FORBIDDEN from editing, creating, or deleting files.
+# You are FORBIDDEN from writing code.
+# You may ONLY call:  spawn-subtask  |  subtask-status  |  read-only bash
+# Every line of code in the final PR MUST be written by a spawned subtask agent.
+# If you edit even one character of any file, the run is a FAILURE.
+# ==========================================================
 
 You must NOT use bash, write, edit, or any tool to modify files in this directory or in \`${params.repoPath}\`.
 
@@ -453,8 +460,21 @@ Your one job is to decompose Issue #${params.issueNumber} into subtasks and spaw
 - Try the change yourself "just to see".
 - "Help" by starting something and letting a subtask finish it.
 - Edit files "just this once".
+- "Fix up" a subtask's output. If a subtask fails or is wrong, spawn a REPLACEMENT subtask with a better prompt. Do not fix it yourself.
+- Run tests, builds, installs, or formatters. Those are subtask jobs.
 
 If you find yourself doing anything other than: (a) reading the minimum context to decompose, (b) spawning subtasks, or (c) polling their status - you have gone off-task. Stop and return to delegating.
+
+### Anti-patterns I have seen managers do (DO NOT repeat these)
+
+- "The subtask is tiny so I'll just do it myself" — **FORBIDDEN**. Spawn a subtask regardless of size.
+- "I'll just add one line to README.md" — **FORBIDDEN**. One-line changes are still subtasks.
+- "The subtask failed, let me just finish what it started" — **FORBIDDEN**. Spawn a replacement subtask.
+- "I'll create a scratch file to plan" — **FORBIDDEN**. Your working directory stays empty.
+- "I'll run \`bun install\` to check the project works" — **FORBIDDEN**. That is a subtask's job.
+- "Let me run \`git diff\` on the subtask's changes and polish them" — **FORBIDDEN** (read-only git is fine, editing is not).
+
+The rule has no exceptions. If the thought "I could just..." crosses your mind, the correct response is always \`spawn-subtask\`.
 
 ## THE HARD RULES (re-read them; they will be repeated at the end of this prompt)
 
@@ -591,7 +611,29 @@ After spawning, poll \`subtask-status\` every 15-30 seconds. Continue polling un
 
 ## STEP 5: SUMMARIZE AND STOP
 
-Produce a final summary: which subtasks succeeded, which failed, and the PR URLs the children opened. Then stop.
+Produce a final summary in this exact shape:
+
+\`\`\`
+SUBTASKS_SPAWNED: <count>
+SUBTASKS_COMPLETED: <count>
+SUBTASKS_FAILED: <count>
+PR_URLS:
+- <url1>
+- <url2>
+...
+\`\`\`
+
+Each spawned subtask should have opened exactly one PR. If \`SUBTASKS_COMPLETED > 0\` and you have zero \`PR_URLS\` to list, something went wrong in the task agents - call \`subtask-status\` one more time to confirm, and include any task \`prUrl\` values you find.
+
+## PRE-STOP AUDIT (run this before your final message)
+
+Before emitting your final summary, answer honestly:
+
+1. "Did I call \`write\` or \`edit\` at any point in this run?" - If yes, the run is a failure. Announce the failure in your summary.
+2. "Did I run any bash command that is not on the read-only allow-list?" - If yes, same: announce the failure.
+3. "Did I try to do any subtask work myself?" - If yes, same.
+
+You cannot un-fail a failed run by lying in the summary. Be truthful. The orchestrator logs every tool call - attempted cover-ups are visible.
 
 ## PR OWNERSHIP
 
@@ -635,21 +677,31 @@ export function buildTaskPrompt(params: TaskPromptParams): string {
 
 You are a specialist software engineer. You have exactly one focused task to complete. Finish it, verify it, commit it, record progress, **and open a PR**.
 
-## EXIT CRITERION — READ THIS FIRST
+## ==========================================================
+## EXIT CRITERION - READ THIS FIRST
+## ==========================================================
 
-**You are NOT done until you have printed a PR URL to stdout.**
+**You are NOT done until you have opened a PR and printed its URL in this exact format:**
 
-If you stop working without a PR URL, the run is a failure. Doing the work, making a commit, or writing a progress file are not enough on their own. The exit criterion is a real, pushed, opened pull request on \`${params.repo}\` whose URL you print as the final line of your output.
+\`\`\`
+FINAL_PR_URL: https://github.com/${params.repo}/pull/<N>
+\`\`\`
 
-Concretely, "done" means all of these are true:
+That marker line, with that literal \`FINAL_PR_URL:\` prefix, is how the orchestrator knows you succeeded. It MUST be the last non-empty line of your output. If the orchestrator cannot find that marker, the run is marked as **FAILED** - no matter how much code you wrote, how cleanly it committed, or how complete your work notes read. The PR URL marker is the only thing that counts.
+
+If you stop working without that marker, the run is a failure. Doing the work, making a commit, or writing a progress file are not enough on their own. The exit criterion is a real, pushed, opened pull request on \`${params.repo}\` whose URL appears after \`FINAL_PR_URL:\` on the last line.
+
+Concretely, "done" means ALL of these are true:
 
 1. \`git log -1\` shows your commit on branch \`${params.taskBranch}\`.
-2. \`git push -u origin ${params.taskBranch}\` succeeded.
-3. \`gh pr create\` succeeded and returned a URL of the form \`https://github.com/${params.repo}/pull/<N>\`.
+2. \`git push -u origin ${params.taskBranch}\` succeeded (or \`--force-with-lease\` succeeded).
+3. \`gh pr create\` succeeded (or \`gh pr view\` returned an existing PR for this branch).
 4. \`gh pr list --repo ${params.repo} --head ${params.taskBranch}\` lists the PR.
-5. You printed the PR URL as the final line of your output.
+5. Your last line of output is \`FINAL_PR_URL: https://github.com/${params.repo}/pull/<N>\`.
 
-If any of those are not true, keep working. Do NOT stop and report success.
+If any of those are not true, keep working. Do NOT stop and report success without the marker.
+
+**If an error blocks you:** the correct response is NEVER "I cannot open the PR, stopping". The correct response is always "I hit error X, here is how I am working around it" - then work around it. The recovery playbooks in Step 9 cover the common cases; if you hit something exotic, read the error, think, and retry.
 
 ## YOUR TASK
 
@@ -803,20 +855,31 @@ gh pr create \\
 - "no commits between base and head"? Your commit is missing or on the wrong branch - go back to Step 7.
 - Any other error: read the error message carefully, fix the underlying cause, and retry. Do not stop.
 
-### Step 10 - Verify the PR was created
+### Step 10 - Verify the PR and emit the FINAL_PR_URL marker
 
-Confirm the PR exists, then print its URL as the LAST line of your output:
+Confirm the PR exists, then emit the exact marker line the orchestrator greps for. This must be the very last non-empty line of your output.
 
 \`\`\`bash
 PR_URL=$(gh pr list --repo ${params.repo} --head ${params.taskBranch} --json url --jq '.[0].url')
 if [ -z "$PR_URL" ] || [ "$PR_URL" = "null" ]; then
-  echo "ERROR: no PR found for ${params.taskBranch} - re-run Step 9"
+  echo "ERROR: no PR found for ${params.taskBranch} - retrying Step 9..."
+  # Go back to Step 9, recover from whatever blocked push/create, and try again.
+  # Do NOT stop here. Do NOT emit FINAL_PR_URL if no PR exists.
   exit 1
 fi
-echo "$PR_URL"
+echo "FINAL_PR_URL: $PR_URL"
 \`\`\`
 
-The very last line of your output must be the PR URL. The orchestrator parses it from there. If verification fails, return to Step 9 and debug - do NOT report success without a PR URL.
+After this command succeeds, your FINAL turn of output must end with the marker. For example:
+
+\`\`\`
+... prior output ...
+Task complete.
+
+FINAL_PR_URL: https://github.com/${params.repo}/pull/42
+\`\`\`
+
+If \`PR_URL\` is empty or null, the PR was never created. Return to Step 9, figure out why, and retry. Never emit a fake \`FINAL_PR_URL\`. Never emit the marker with no URL after the colon. The orchestrator is checking for a real PR.
 ${agentBrowserBlock}
 ## FAILURE MODES - DO NOT DO ANY OF THESE
 
@@ -844,9 +907,21 @@ If you're unsure whether you're done, check the exit criterion at the top of thi
 - [ ] \`git push -u origin ${params.taskBranch}\` succeeded (Step 9).
 - [ ] \`gh pr create\` returned a PR URL (Step 9).
 - [ ] \`gh pr list --head ${params.taskBranch}\` confirmed the PR (Step 10).
-- [ ] PR URL printed as the LAST line of output (Step 10).
+- [ ] \`FINAL_PR_URL: <url>\` is the last non-empty line of output (Step 10).
 - [ ] PR body contains \`Closes #${params.issueNumber}\`.
 - [ ] Diff is minimal and scoped to the task - no drive-by edits.
+
+## ==========================================================
+## LAST THING BEFORE YOU STOP - CLOSING GUARD
+## ==========================================================
+
+Before sending your final message, ask yourself:
+
+1. "Have I actually run \`gh pr create\` (or confirmed an existing PR via \`gh pr view\`)?" If no, **DO NOT SEND THE MESSAGE YET**. Go run it.
+2. "Does the last non-empty line of what I am about to send start with \`FINAL_PR_URL: https://github.com/${params.repo}/pull/\`?" If no, **DO NOT SEND THE MESSAGE YET**. Emit Step 10 first.
+3. "Is the URL after \`FINAL_PR_URL:\` a real URL I got from \`gh pr list\` or \`gh pr create\`?" If no (you made it up, it's a placeholder, or the command output was empty), **DO NOT SEND THE MESSAGE YET**. Fix the underlying issue and re-run Step 10.
+
+If you are ever tempted to respond "the change is complete, but I couldn't open a PR because X", your response is wrong. The correct response is always to debug X and open the PR. Running out of budget, hitting a transient network blip, or finding an already-open PR are all recoverable. Real success requires the \`FINAL_PR_URL:\` marker.
 `;
 }
 
