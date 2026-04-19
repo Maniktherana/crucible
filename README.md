@@ -62,7 +62,7 @@ Task Agent (per subtask, own git worktree)
 
 ### Onboarding
 
-When you first run `npx crucible-swe`, the UI shows an onboarding screen with a **Clone Repository** button. Paste any GitHub repo URL (e.g. `https://github.com/owner/repo`) and Crucible clones it, fetches open issues, and populates the kanban board. No configuration needed.
+When you first run `bun dev`, the UI shows an onboarding screen with a **Clone Repository** button. Paste any GitHub repo URL (e.g. `https://github.com/owner/repo`) and Crucible clones it, fetches open issues, and populates the kanban board. No configuration needed.
 
 ### Harness Engineering
 
@@ -76,8 +76,6 @@ Crucible applies key patterns from the SWE-agent paper (ACI design), Anthropic's
 - **Integrated feedback loops** (agent-browser for UI testing, linters on edit)
 - **Repository as system of record** (`.crucible/` directory is the harness)
 - **Emergent decomposition** (manager reasons about task structure, not hardcoded)
-
-See `docs/` for detailed architecture specs per build stream.
 
 ## CLI Reference
 
