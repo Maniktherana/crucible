@@ -1,14 +1,27 @@
-import { ArrowDownIcon, GitBranchIcon, ImageIcon, LightbulbIcon, TerminalIcon } from "lucide-react";
+import {
+  ArrowDownIcon,
+  CheckIcon,
+  FilePlusIcon,
+  GitBranchIcon,
+  LightbulbIcon,
+  PencilIcon,
+  SearchIcon,
+  TerminalIcon,
+  XIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
+import { Spinner } from "~/components/ui/spinner";
 import { cn } from "~/lib/utils";
 
 import { RunStatusBadge } from "./RunStatusBadge";
 import type { CrucibleRun, CrucibleRunEvent } from "./types";
+
+const AUTO_SCROLL_THRESHOLD_PX = 100;
 
 interface SessionChatViewProps {
   run: CrucibleRun;
@@ -18,7 +31,9 @@ interface SessionChatViewProps {
   onSelectRun?: (runId: string) => void;
 }
 
-// --- Message model ------------------------------------------------------------
+// --- Message model ----------------------------------------------------------
+
+type ToolStatus = "pending" | "running" | "completed" | "error";
 
 interface BaseMsg {
   id: string;
@@ -29,28 +44,57 @@ type ChatMessage =
   | (BaseMsg & { kind: "text"; content: string })
   | (BaseMsg & { kind: "reasoning"; content: string })
   | (BaseMsg & {
-      kind: "tool-call";
-      toolName: string;
-      commandText: string;
-      rawInput: unknown;
+      kind: "tool-bash";
+      status: ToolStatus;
+      command: string;
+      title: string;
+      output: string;
+      exitCode: number | null;
     })
-  | (BaseMsg & { kind: "tool-result"; output: string })
+  | (BaseMsg & {
+      kind: "tool-edit";
+      status: ToolStatus;
+      filePath: string;
+      oldString: string;
+      newString: string;
+    })
+  | (BaseMsg & {
+      kind: "tool-write";
+      status: ToolStatus;
+      filePath: string;
+      content: string;
+    })
+  | (BaseMsg & {
+      kind: "tool-search";
+      status: ToolStatus;
+      tool: string;
+      target: string;
+      output: string;
+    })
+  | (BaseMsg & {
+      kind: "tool-generic";
+      status: ToolStatus;
+      tool: string;
+      title: string;
+      input: string;
+      output: string;
+    })
   | (BaseMsg & {
       kind: "spawn";
+      status: ToolStatus;
       prompt: string;
       childRunId?: string;
-      rawInput: unknown;
     })
-  | (BaseMsg & { kind: "step-start" })
-  | (BaseMsg & { kind: "system"; content: string });
+  | (BaseMsg & { kind: "step-start"; stepNumber: number });
 
-// --- Payload helpers ----------------------------------------------------------
+// --- Payload helpers --------------------------------------------------------
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
 }
 
 function stringifySafe(value: unknown): string {
+  if (value == null) return "";
   if (typeof value === "string") return value;
   try {
     return JSON.stringify(value, null, 2) ?? String(value);
@@ -59,12 +103,7 @@ function stringifySafe(value: unknown): string {
   }
 }
 
-/**
- * Drill into the nested opencode event shape:
- *   event.payload = { type: "message.part.updated", properties: { part: {...} } }
- *
- * Returns the inner `part` record or `null` when this event does not carry one.
- */
+/** Extract the inner part from opencode's `message.part.updated` payload. */
 function partOf(event: CrucibleRunEvent): Record<string, unknown> | null {
   const payload = asRecord(event.payload);
   if (!payload) return null;
@@ -73,111 +112,105 @@ function partOf(event: CrucibleRunEvent): Record<string, unknown> | null {
   return asRecord(props.part);
 }
 
-/**
- * Tool results can arrive as a string, a wrapper like `{ type, value }` (AI SDK
- * shape), or an array of content blocks. Collapse to a human-readable string.
- */
-function extractToolResult(output: unknown): string {
-  if (typeof output === "string") return output;
-  const rec = asRecord(output);
-  if (rec) {
-    if (typeof rec.value === "string") return rec.value;
-    if (typeof rec.text === "string") return rec.text;
-    if (typeof rec.stdout === "string") return rec.stdout;
-    if (Array.isArray(rec.content)) {
-      return rec.content
-        .map((c) => {
-          const cr = asRecord(c);
-          if (cr && typeof cr.text === "string") return cr.text;
-          return stringifySafe(c);
-        })
-        .join("\n");
-    }
-  }
-  if (Array.isArray(output)) {
-    return output
-      .map((c) => {
-        const cr = asRecord(c);
-        if (cr && typeof cr.text === "string") return cr.text;
-        return stringifySafe(c);
-      })
-      .join("\n");
-  }
-  return stringifySafe(output);
-}
-
-function extractCommandText(input: unknown): string {
-  if (typeof input === "string") return input;
-  const rec = asRecord(input);
-  if (!rec) return "";
-  if (typeof rec.command === "string") return rec.command;
-  if (typeof rec.cmd === "string") return rec.cmd;
-  if (typeof rec.script === "string") return rec.script;
-  return stringifySafe(input);
-}
-
-function isSpawnSubtask(toolName: string, commandText: string, input: unknown): boolean {
-  const name = toolName.toLowerCase();
-  if (name.includes("spawn-subtask") || name.includes("spawn_subtask")) return true;
-  if (commandText.includes("spawn-subtask")) return true;
-  const rec = asRecord(input);
-  if (rec && typeof rec.tool === "string" && rec.tool.includes("spawn-subtask")) return true;
-  return false;
-}
-
-function extractSpawnPrompt(input: unknown, commandText: string): string {
-  const rec = asRecord(input);
-  if (rec) {
-    if (typeof rec.prompt === "string" && rec.prompt.trim()) return rec.prompt;
-    if (typeof rec.task === "string" && rec.task.trim()) return rec.task;
-    if (typeof rec.description === "string" && rec.description.trim()) return rec.description;
-  }
-  // Try the first quoted argument in the bash command.
-  const quoted = commandText.match(/"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/);
-  if (quoted) return quoted[1] ?? quoted[2] ?? commandText;
-  const idx = commandText.indexOf("spawn-subtask");
-  if (idx >= 0) {
-    return commandText.slice(idx + "spawn-subtask".length).trim();
-  }
-  return commandText;
-}
-
-function stableKey(event: CrucibleRunEvent, part: Record<string, unknown> | null): string {
+function partId(event: CrucibleRunEvent, part: Record<string, unknown> | null): string {
   if (part) {
-    const candidate =
+    const id =
       (part.id as string | undefined) ??
       (part.partId as string | undefined) ??
-      (part.part_id as string | undefined) ??
-      (part.partID as string | undefined);
-    if (candidate) return candidate;
+      (part.part_id as string | undefined);
+    if (id) return id;
   }
   return event.id;
 }
 
+function toToolStatus(raw: unknown): ToolStatus {
+  if (raw === "pending" || raw === "running" || raw === "completed" || raw === "error") {
+    return raw;
+  }
+  return "pending";
+}
+
+/** Last two segments of a path, e.g. "apps/web/src/x.ts" → "src/x.ts". */
+function shortenPath(filePath: string): string {
+  const parts = filePath.split("/").filter(Boolean);
+  if (parts.length <= 2) return filePath;
+  return parts.slice(-2).join("/");
+}
+
+/** Output blocks can arrive as string, { value }, { text }, array of content, etc. */
+function toOutputString(raw: unknown): string {
+  if (raw == null) return "";
+  if (typeof raw === "string") return raw;
+  const rec = asRecord(raw);
+  if (rec) {
+    if (typeof rec.value === "string") return rec.value;
+    if (typeof rec.text === "string") return rec.text;
+    if (typeof rec.stdout === "string") return rec.stdout;
+    if (typeof rec.output === "string") return rec.output;
+    if (Array.isArray(rec.content)) {
+      return rec.content
+        .map((c) => (typeof c === "string" ? c : ((asRecord(c)?.text as string | undefined) ?? "")))
+        .join("\n");
+    }
+  }
+  if (Array.isArray(raw)) {
+    return raw
+      .map((c) => (typeof c === "string" ? c : ((asRecord(c)?.text as string | undefined) ?? "")))
+      .join("\n");
+  }
+  return stringifySafe(raw);
+}
+
+function isSpawnCommand(command: string): boolean {
+  return command.includes("spawn-subtask");
+}
+
+/** Pull the subtask prompt out of a spawn-subtask bash command. */
+function extractSpawnPrompt(command: string): string {
+  const flag = command.match(/--prompt(?:=|\s+)(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|(\S+))/);
+  if (flag) return (flag[1] ?? flag[2] ?? flag[3] ?? "").trim();
+  const quoted = [...command.matchAll(/"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g)];
+  if (quoted.length > 0) {
+    const last = quoted[quoted.length - 1]!;
+    return (last[1] ?? last[2] ?? "").trim();
+  }
+  const idx = command.indexOf("spawn-subtask");
+  if (idx >= 0) return command.slice(idx + "spawn-subtask".length).trim();
+  return command;
+}
+
+// --- Parser -----------------------------------------------------------------
+
 /**
  * Parse raw run events into an ordered, deduplicated list of chat messages.
  *
- * opencode's server emits `message.part.updated` events whose payload has a
- * nested shape:
+ * opencode emits `message.part.updated` events whose nested `part` carries
+ * the real payload. Current shape:
  *
- *   event.payload = {
- *     type: "message.part.updated",
- *     properties: {
- *       sessionID, messageID,
- *       part: { type: "text" | "tool-invocation" | "tool-result" | "reasoning" | "step-start",
- *               id: "prt_...", text?, toolName?, input?, output? }
+ *   event.payload.properties.part = {
+ *     type: "text" | "reasoning" | "tool" | "step-start" | "step-finish",
+ *     id:   "prt_...",
+ *     // when type === "tool":
+ *     tool: "bash" | "edit" | "write" | "read" | "glob" | "grep" | ...,
+ *     state: {
+ *       status: "pending" | "running" | "completed" | "error",
+ *       input: { command, filePath, oldString, newString, ... },
+ *       output: "..." | { ... },
+ *       metadata: { exit, description, ... },
+ *       title: "...",
  *     }
  *   }
  *
- * Each update carries the *full* part-so-far for a stable `part.id`, so we
- * upsert by that id — the latest update replaces earlier ones while keeping
- * the original position in the conversation.
+ * Each update carries the full part-so-far for a stable `part.id`, so we
+ * upsert by id — the latest status replaces earlier ones while preserving
+ * position in the conversation.
  */
 function parseMessages(events: CrucibleRunEvent[], childRunIds: string[]): ChatMessage[] {
   const entries: { key: string; msg: ChatMessage }[] = [];
   const keyToIndex = new Map<string, number>();
   const spawnKeyToChildId = new Map<string, string>();
   let spawnCursor = 0;
+  let stepCounter = 0;
 
   const upsert = (key: string, msg: ChatMessage) => {
     const existing = keyToIndex.get(key);
@@ -189,8 +222,7 @@ function parseMessages(events: CrucibleRunEvent[], childRunIds: string[]): ChatM
     }
   };
 
-  // Prefix-extend fallback for text/reasoning parts that happen to lack a
-  // stable `part.id` (defensive — opencode usually provides one).
+  // Prefix-extend fallback for text/reasoning parts that lack a stable id.
   const tryPrefixExtend = (text: string, at: string, kind: "text" | "reasoning"): boolean => {
     for (let i = entries.length - 1; i >= 0; i--) {
       const prev = entries[i]!.msg;
@@ -199,7 +231,7 @@ function parseMessages(events: CrucibleRunEvent[], childRunIds: string[]): ChatM
           entries[i]!.msg = { ...prev, content: text, timestamp: at };
           return true;
         }
-        break; // only check the immediate prior message-ish entry
+        break;
       }
     }
     return false;
@@ -210,8 +242,9 @@ function parseMessages(events: CrucibleRunEvent[], childRunIds: string[]): ChatM
     const part = partOf(event);
     if (!part) continue;
     const partType = part.type;
-    const key = stableKey(event, part);
+    const key = partId(event, part);
 
+    // ---- Text / Reasoning ----
     if (partType === "text" || partType === "reasoning") {
       const content = typeof part.text === "string" ? part.text : "";
       if (!content.trim()) continue;
@@ -219,33 +252,147 @@ function parseMessages(events: CrucibleRunEvent[], childRunIds: string[]): ChatM
       const hasStableKey = key !== event.id;
       if (!hasStableKey && tryPrefixExtend(content, event.at, partType)) continue;
 
-      upsert(key, {
-        id: key,
-        kind: partType,
-        content,
-        timestamp: event.at,
-      });
+      upsert(key, { id: key, kind: partType, content, timestamp: event.at });
       continue;
     }
 
+    // ---- Step markers ----
     if (partType === "step-start") {
+      if (!keyToIndex.has(key)) stepCounter += 1;
+      const existing = keyToIndex.get(key);
+      const stepNumber =
+        existing !== undefined && entries[existing]!.msg.kind === "step-start"
+          ? (entries[existing]!.msg as Extract<ChatMessage, { kind: "step-start" }>).stepNumber
+          : stepCounter;
+      upsert(key, { id: key, kind: "step-start", stepNumber, timestamp: event.at });
+      continue;
+    }
+    if (partType === "step-finish") continue;
+
+    // ---- Tool calls (current opencode shape: part.type === "tool") ----
+    if (partType === "tool") {
+      const toolName = typeof part.tool === "string" ? part.tool : "tool";
+      const state = asRecord(part.state) ?? {};
+      const status = toToolStatus(state.status);
+      const input = asRecord(state.input) ?? {};
+      const metadata = asRecord(state.metadata) ?? {};
+      const title =
+        (typeof state.title === "string" && state.title) ||
+        (typeof metadata.description === "string" && metadata.description) ||
+        (typeof input.description === "string" && input.description) ||
+        "";
+
+      if (toolName === "bash") {
+        const command =
+          (typeof input.command === "string" && input.command) ||
+          (typeof metadata.command === "string" && metadata.command) ||
+          "";
+        const output =
+          toOutputString(state.output) ||
+          toOutputString(metadata.output) ||
+          toOutputString(metadata.stdout);
+        const exitRaw = metadata.exit ?? metadata.exitCode ?? metadata.exit_code;
+        const exitCode = typeof exitRaw === "number" ? exitRaw : null;
+
+        if (isSpawnCommand(command)) {
+          let childRunId = spawnKeyToChildId.get(key);
+          if (!childRunId && spawnCursor < childRunIds.length) {
+            const next = childRunIds[spawnCursor++];
+            if (next) {
+              childRunId = next;
+              spawnKeyToChildId.set(key, next);
+            }
+          }
+          upsert(key, {
+            id: key,
+            kind: "spawn",
+            status,
+            prompt: extractSpawnPrompt(command),
+            ...(childRunId ? { childRunId } : {}),
+            timestamp: event.at,
+          });
+          continue;
+        }
+
+        upsert(key, {
+          id: key,
+          kind: "tool-bash",
+          status,
+          command,
+          title,
+          output,
+          exitCode,
+          timestamp: event.at,
+        });
+        continue;
+      }
+
+      if (toolName === "edit") {
+        upsert(key, {
+          id: key,
+          kind: "tool-edit",
+          status,
+          filePath: typeof input.filePath === "string" ? input.filePath : "",
+          oldString: typeof input.oldString === "string" ? input.oldString : "",
+          newString: typeof input.newString === "string" ? input.newString : "",
+          timestamp: event.at,
+        });
+        continue;
+      }
+
+      if (toolName === "write") {
+        upsert(key, {
+          id: key,
+          kind: "tool-write",
+          status,
+          filePath: typeof input.filePath === "string" ? input.filePath : "",
+          content: typeof input.content === "string" ? input.content : "",
+          timestamp: event.at,
+        });
+        continue;
+      }
+
+      if (toolName === "read" || toolName === "glob" || toolName === "grep") {
+        const target =
+          (typeof input.filePath === "string" && input.filePath) ||
+          (typeof input.pattern === "string" && input.pattern) ||
+          (typeof input.path === "string" && input.path) ||
+          "";
+        upsert(key, {
+          id: key,
+          kind: "tool-search",
+          status,
+          tool: toolName,
+          target,
+          output: toOutputString(state.output) || toOutputString(metadata.output),
+          timestamp: event.at,
+        });
+        continue;
+      }
+
       upsert(key, {
         id: key,
-        kind: "step-start",
+        kind: "tool-generic",
+        status,
+        tool: toolName,
+        title,
+        input: stringifySafe(input),
+        output: toOutputString(state.output) || toOutputString(metadata.output),
         timestamp: event.at,
       });
       continue;
     }
 
+    // ---- Legacy AI-SDK shape (tool-invocation / tool-result) ----
     if (partType === "tool-invocation" || partType === "tool-call") {
       const toolName =
         (part.toolName as string | undefined) ??
         (part.tool as string | undefined) ??
         (part.name as string | undefined) ??
         "tool";
-      const commandText = extractCommandText(part.input);
-
-      if (isSpawnSubtask(toolName, commandText, part.input)) {
+      const inputRec = asRecord(part.input) ?? {};
+      const command = typeof inputRec.command === "string" ? inputRec.command : "";
+      if (toolName === "bash" && isSpawnCommand(command)) {
         let childRunId = spawnKeyToChildId.get(key);
         if (!childRunId && spawnCursor < childRunIds.length) {
           const next = childRunIds[spawnCursor++];
@@ -257,31 +404,35 @@ function parseMessages(events: CrucibleRunEvent[], childRunIds: string[]): ChatM
         upsert(key, {
           id: key,
           kind: "spawn",
-          prompt: extractSpawnPrompt(part.input, commandText),
+          status: "running",
+          prompt: extractSpawnPrompt(command),
           ...(childRunId ? { childRunId } : {}),
-          rawInput: part.input,
           timestamp: event.at,
         });
         continue;
       }
-
       upsert(key, {
         id: key,
-        kind: "tool-call",
-        toolName,
-        commandText,
-        rawInput: part.input,
+        kind: "tool-generic",
+        status: "running",
+        tool: toolName,
+        title: "",
+        input: command || stringifySafe(inputRec),
+        output: "",
         timestamp: event.at,
       });
       continue;
     }
 
     if (partType === "tool-result") {
-      const raw = part.output ?? part.result ?? part.stdout ?? "";
       upsert(key, {
         id: key,
-        kind: "tool-result",
-        output: extractToolResult(raw),
+        kind: "tool-generic",
+        status: "completed",
+        tool: "tool",
+        title: "",
+        input: "",
+        output: toOutputString(part.output ?? part.result ?? part.stdout),
         timestamp: event.at,
       });
       continue;
@@ -291,54 +442,20 @@ function parseMessages(events: CrucibleRunEvent[], childRunIds: string[]): ChatM
   return entries.map((e) => e.msg);
 }
 
-// --- Rendering ---------------------------------------------------------------
-
-interface ToolChrome {
-  label: string;
-  border: string;
-  header: string;
-  text: string;
-  icon: typeof TerminalIcon;
-}
-
-function chromeForTool(toolName: string, commandText: string): ToolChrome {
-  const name = toolName.toLowerCase();
-  const cmd = commandText.trim();
-
-  if (name.includes("agent-browser") || cmd.includes("agent-browser")) {
-    return {
-      label: `agent-browser${name !== "bash" && name !== "shell" ? "" : ""}`,
-      border: "border-green-500/30",
-      header: "bg-green-500/10 text-green-300",
-      text: "text-green-300",
-      icon: ImageIcon,
-    };
-  }
-
-  if (name === "bash" || name === "shell" || name === "execute") {
-    return {
-      label: name,
-      border: "border-blue-500/30",
-      header: "bg-blue-500/10 text-blue-300",
-      text: "text-blue-300",
-      icon: TerminalIcon,
-    };
-  }
-
-  return {
-    label: toolName,
-    border: "border-border",
-    header: "bg-muted/60 text-muted-foreground",
-    text: "text-muted-foreground",
-    icon: TerminalIcon,
-  };
-}
+// --- Shared UI --------------------------------------------------------------
 
 function MarkdownBubble({ text, dim }: { text: string; dim?: boolean }) {
   return (
     <div
       className={cn(
-        "max-w-none text-sm leading-relaxed [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-background [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[.85em] [&_li]:my-0.5 [&_ol]:my-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-background [&_pre]:p-2 [&_pre]:text-xs [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-5",
+        "max-w-none text-sm leading-relaxed",
+        "[&_a]:text-primary [&_a]:underline",
+        "[&_code]:rounded [&_code]:bg-background [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[.85em]",
+        "[&_li]:my-0.5",
+        "[&_ol]:my-1 [&_ol]:list-decimal [&_ol]:pl-5",
+        "[&_p]:my-1",
+        "[&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-background [&_pre]:p-2 [&_pre]:text-xs",
+        "[&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-5",
         dim && "text-muted-foreground",
       )}
     >
@@ -347,10 +464,19 @@ function MarkdownBubble({ text, dim }: { text: string; dim?: boolean }) {
   );
 }
 
+function ToolStatusIcon({ status }: { status: ToolStatus }) {
+  if (status === "running" || status === "pending") return <Spinner className="h-3 w-3" />;
+  if (status === "completed") return <CheckIcon className="h-3 w-3 text-green-500" />;
+  if (status === "error") return <XIcon className="h-3 w-3 text-red-500" />;
+  return null;
+}
+
+// --- Message rows -----------------------------------------------------------
+
 function TextMessage({ content }: { content: string }) {
   return (
     <div className="flex gap-2">
-      <Badge variant="secondary" size="sm" className="mt-0.5 shrink-0 text-[10px]">
+      <Badge size="sm" className="mt-0.5 shrink-0 bg-primary/15 text-primary text-[10px]">
         Agent
       </Badge>
       <div className="min-w-0 flex-1 rounded-lg bg-muted/30 px-3 py-2">
@@ -361,8 +487,6 @@ function TextMessage({ content }: { content: string }) {
 }
 
 function ReasoningMessage({ content }: { content: string }) {
-  // Always shown — the agent's reasoning is real work and the user wants
-  // every step visible without clicking.
   return (
     <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/10 px-3 py-2">
       <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -374,49 +498,231 @@ function ReasoningMessage({ content }: { content: string }) {
   );
 }
 
-function ToolCallMessage({ toolName, commandText }: { toolName: string; commandText: string }) {
-  const chrome = chromeForTool(toolName, commandText);
-  const Icon = chrome.icon;
+function StepDivider({ stepNumber }: { stepNumber: number }) {
   return (
-    <div className={cn("overflow-hidden rounded-lg border", chrome.border)}>
-      <div
-        className={cn("flex items-center gap-1.5 px-2 py-1 font-mono text-[11px]", chrome.header)}
-      >
-        <Icon className="h-3 w-3" />
-        <span className="font-semibold">{chrome.label}</span>
-        {toolName !== chrome.label && <span className="opacity-60">({toolName})</span>}
-      </div>
-      <pre className="overflow-x-auto bg-background px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
-        {commandText || "(no command)"}
-      </pre>
+    <div
+      className="flex items-center gap-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground/55"
+      aria-hidden
+    >
+      <span className="h-px flex-1 bg-border/60" />
+      <span>Step {stepNumber}</span>
+      <span className="h-px flex-1 bg-border/60" />
     </div>
   );
 }
 
-function ToolResultMessage({ output }: { output: string }) {
-  // Always show the full output — no truncation, no click-to-expand.
-  // For extremely tall outputs we use an inner max-height + overflow-auto
-  // so one huge result doesn't dominate the viewport, but every line is
-  // still present and reachable with a scroll.
-  if (!output.trim()) {
-    return (
-      <div className="ml-6 text-xs text-muted-foreground/70 italic">
-        → <span className="ml-1">(no output)</span>
-      </div>
-    );
-  }
-
-  const lineCount = output.split("\n").length;
-
+function BashMessage({
+  command,
+  status,
+  title,
+  output,
+  exitCode,
+}: {
+  command: string;
+  status: ToolStatus;
+  title: string;
+  output: string;
+  exitCode: number | null;
+}) {
+  const lineCount = output ? output.split("\n").length : 0;
   return (
-    <div className="ml-6 rounded-md border border-border/60 bg-background/50">
-      <div className="flex items-center justify-between border-b border-border/60 px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-        <span>→ result</span>
-        <span className="font-mono">{lineCount} lines</span>
+    <div className="overflow-hidden rounded-lg border border-blue-500/30 border-l-[4px] bg-card/30">
+      <div className="flex items-center gap-2 px-3 py-1.5 text-xs">
+        <TerminalIcon className="h-3.5 w-3.5 text-blue-400" />
+        <span className="font-mono font-semibold text-blue-300">bash</span>
+        {title && (
+          <span className="min-w-0 truncate text-muted-foreground" title={title}>
+            {title}
+          </span>
+        )}
+        <span className="ml-auto">
+          <ToolStatusIcon status={status} />
+        </span>
       </div>
-      <pre className="max-h-[60vh] overflow-auto px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
-        {output}
+      <pre className="overflow-x-auto bg-background/60 px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+        <span className="text-muted-foreground">$ </span>
+        {command || "(no command)"}
       </pre>
+      {(output.trim() || exitCode != null) && (
+        <div className="border-t border-border/60">
+          <div className="flex items-center gap-2 px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+            <span>output</span>
+            {exitCode != null && (
+              <Badge
+                size="sm"
+                className={cn(
+                  "font-mono text-[10px]",
+                  exitCode === 0 ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400",
+                )}
+              >
+                exit {exitCode}
+              </Badge>
+            )}
+            {lineCount > 0 && <span className="ml-auto font-mono">{lineCount} lines</span>}
+          </div>
+          {output.trim() ? (
+            <pre className="max-h-[60vh] overflow-auto bg-background/60 px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+              {output}
+            </pre>
+          ) : (
+            <p className="px-3 pb-2 text-xs text-muted-foreground italic">(no output)</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EditMessage({
+  filePath,
+  status,
+  oldString,
+  newString,
+}: {
+  filePath: string;
+  status: ToolStatus;
+  oldString: string;
+  newString: string;
+}) {
+  const oldLines = oldString ? oldString.split("\n") : [];
+  const newLines = newString ? newString.split("\n") : [];
+  return (
+    <div className="overflow-hidden rounded-lg border border-amber-500/30 border-l-[4px] bg-card/30">
+      <div className="flex items-center gap-2 px-3 py-1.5 text-xs">
+        <PencilIcon className="h-3.5 w-3.5 text-amber-400" />
+        <span className="font-mono font-semibold text-amber-300">edit</span>
+        <span className="min-w-0 truncate font-mono text-muted-foreground" title={filePath}>
+          {shortenPath(filePath)}
+        </span>
+        <span className="ml-auto">
+          <ToolStatusIcon status={status} />
+        </span>
+      </div>
+      {(oldLines.length > 0 || newLines.length > 0) && (
+        // Render each side as a single <pre> instead of per-line <div>s so we
+        // don't need per-line keys. Colors still come through via bg classes
+        // on the block itself.
+        <div className="max-h-[60vh] overflow-auto bg-background/60 font-mono text-xs leading-relaxed">
+          {oldLines.length > 0 && (
+            <pre className="bg-red-500/10 px-3 py-1 text-red-300/90 whitespace-pre-wrap break-all">
+              {oldLines.map((l) => `− ${l}`).join("\n")}
+            </pre>
+          )}
+          {newLines.length > 0 && (
+            <pre className="bg-green-500/10 px-3 py-1 text-green-300/90 whitespace-pre-wrap break-all">
+              {newLines.map((l) => `+ ${l}`).join("\n")}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WriteMessage({
+  filePath,
+  status,
+  content,
+}: {
+  filePath: string;
+  status: ToolStatus;
+  content: string;
+}) {
+  return (
+    <div className="overflow-hidden rounded-lg border border-emerald-500/30 border-l-[4px] bg-card/30">
+      <div className="flex items-center gap-2 px-3 py-1.5 text-xs">
+        <FilePlusIcon className="h-3.5 w-3.5 text-emerald-400" />
+        <span className="font-mono font-semibold text-emerald-300">write</span>
+        <span className="min-w-0 truncate font-mono text-muted-foreground" title={filePath}>
+          {shortenPath(filePath)}
+        </span>
+        <span className="ml-auto">
+          <ToolStatusIcon status={status} />
+        </span>
+      </div>
+      {content && (
+        <pre className="max-h-[60vh] overflow-auto bg-background/60 px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+          {content}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function SearchMessage({
+  tool,
+  target,
+  output,
+  status,
+}: {
+  tool: string;
+  target: string;
+  output: string;
+  status: ToolStatus;
+}) {
+  return (
+    <div className="overflow-hidden rounded-lg border border-border border-l-[4px] bg-card/30">
+      <div className="flex items-center gap-2 px-3 py-1.5 text-xs">
+        <SearchIcon className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="font-mono font-semibold">{tool}</span>
+        <span className="min-w-0 truncate font-mono text-muted-foreground" title={target}>
+          {target || "—"}
+        </span>
+        <span className="ml-auto">
+          <ToolStatusIcon status={status} />
+        </span>
+      </div>
+      {output.trim() && (
+        <pre className="max-h-[60vh] overflow-auto border-t border-border/60 bg-background/60 px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+          {output}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function GenericToolMessage({
+  tool,
+  title,
+  input,
+  output,
+  status,
+}: {
+  tool: string;
+  title: string;
+  input: string;
+  output: string;
+  status: ToolStatus;
+}) {
+  return (
+    <div className="overflow-hidden rounded-lg border border-border border-l-[4px] bg-card/30">
+      <div className="flex items-center gap-2 px-3 py-1.5 text-xs">
+        <TerminalIcon className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="font-mono font-semibold">{tool}</span>
+        {title && (
+          <span className="min-w-0 truncate text-muted-foreground" title={title}>
+            {title}
+          </span>
+        )}
+        <span className="ml-auto">
+          <ToolStatusIcon status={status} />
+        </span>
+      </div>
+      {input && (
+        <pre className="max-h-64 overflow-auto border-t border-border/60 bg-background/60 px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+          {input}
+        </pre>
+      )}
+      {output.trim() && (
+        <div className="border-t border-border/60">
+          <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+            output
+          </div>
+          <pre className="max-h-[60vh] overflow-auto bg-background/60 px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+            {output}
+          </pre>
+        </div>
+      )}
     </div>
   );
 }
@@ -434,14 +740,14 @@ function SpawnMessage({
 }) {
   const previewPrompt = prompt.length > 220 ? `${prompt.slice(0, 220)}…` : prompt;
   return (
-    <div className="overflow-hidden rounded-lg border border-purple-500/40 bg-purple-500/5">
+    <div className="overflow-hidden rounded-lg border border-purple-500/50 border-l-[4px] bg-purple-500/5">
       <div className="flex items-center gap-1.5 border-b border-purple-500/30 bg-purple-500/10 px-3 py-1.5 font-mono text-[11px] text-purple-300">
         <GitBranchIcon className="h-3 w-3" />
-        <span className="font-semibold uppercase tracking-wider">Spawned Subtask</span>
+        <span className="font-semibold uppercase tracking-wider">Spawned Task</span>
         {childRun && <RunStatusBadge status={childRun.status} showLabel />}
       </div>
       <div className="space-y-2 px-3 py-2">
-        <p className="text-sm leading-snug whitespace-pre-wrap">{previewPrompt}</p>
+        <p className="text-sm leading-snug whitespace-pre-wrap">{previewPrompt || "(no prompt)"}</p>
         {childRunId && onSelectRun ? (
           <Button
             size="xs"
@@ -461,22 +767,7 @@ function SpawnMessage({
   );
 }
 
-function SystemMessage({ content }: { content: string }) {
-  return <div className="text-center text-[11px] text-muted-foreground/70 italic">{content}</div>;
-}
-
-function StepStartDivider() {
-  return (
-    <div
-      className="flex items-center gap-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground/60"
-      aria-hidden
-    >
-      <span className="h-px flex-1 bg-border/60" />
-      <span>step</span>
-      <span className="h-px flex-1 bg-border/60" />
-    </div>
-  );
-}
+// --- Dispatcher -------------------------------------------------------------
 
 function ChatMessageRow({
   message,
@@ -492,10 +783,54 @@ function ChatMessageRow({
       return <TextMessage content={message.content} />;
     case "reasoning":
       return <ReasoningMessage content={message.content} />;
-    case "tool-call":
-      return <ToolCallMessage toolName={message.toolName} commandText={message.commandText} />;
-    case "tool-result":
-      return <ToolResultMessage output={message.output} />;
+    case "step-start":
+      return <StepDivider stepNumber={message.stepNumber} />;
+    case "tool-bash":
+      return (
+        <BashMessage
+          command={message.command}
+          status={message.status}
+          title={message.title}
+          output={message.output}
+          exitCode={message.exitCode}
+        />
+      );
+    case "tool-edit":
+      return (
+        <EditMessage
+          filePath={message.filePath}
+          status={message.status}
+          oldString={message.oldString}
+          newString={message.newString}
+        />
+      );
+    case "tool-write":
+      return (
+        <WriteMessage
+          filePath={message.filePath}
+          status={message.status}
+          content={message.content}
+        />
+      );
+    case "tool-search":
+      return (
+        <SearchMessage
+          tool={message.tool}
+          target={message.target}
+          output={message.output}
+          status={message.status}
+        />
+      );
+    case "tool-generic":
+      return (
+        <GenericToolMessage
+          tool={message.tool}
+          title={message.title}
+          input={message.input}
+          output={message.output}
+          status={message.status}
+        />
+      );
     case "spawn": {
       const childRun = message.childRunId ? taskRunMap.get(message.childRunId) : undefined;
       return (
@@ -507,16 +842,10 @@ function ChatMessageRow({
         />
       );
     }
-    case "step-start":
-      return <StepStartDivider />;
-    case "system":
-      return <SystemMessage content={message.content} />;
   }
 }
 
-// --- Auto-scroll container ---------------------------------------------------
-
-const AUTO_SCROLL_THRESHOLD_PX = 48;
+// --- Container with auto-scroll --------------------------------------------
 
 export function SessionChatView({ run, taskRuns, onSelectRun }: SessionChatViewProps) {
   const messages = useMemo(
@@ -534,19 +863,18 @@ export function SessionChatView({ run, taskRuns, onSelectRun }: SessionChatViewP
   const innerRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
 
-  // Snap to bottom whenever the run updates and the user hasn't scrolled away.
+  // Pin to bottom whenever the run updates and the user hasn't scrolled away.
   useEffect(() => {
     if (!autoScroll) return;
     const el = scrollRef.current;
     if (!el) return;
-    // Use rAF so we measure after layout finishes (especially for streamed text).
     const id = requestAnimationFrame(() => {
       el.scrollTop = el.scrollHeight;
     });
     return () => cancelAnimationFrame(id);
   }, [autoScroll, run.updatedAt, run.events.length, messages.length]);
 
-  // Observe the inner content size so growing text still pins to bottom.
+  // ResizeObserver: keep pinned as streamed text grows the content height.
   useEffect(() => {
     if (!autoScroll) return;
     const inner = innerRef.current;
@@ -582,7 +910,7 @@ export function SessionChatView({ run, taskRuns, onSelectRun }: SessionChatViewP
         onScroll={handleScroll}
         className="flex-1 overflow-auto overscroll-contain px-4 py-3"
       >
-        <div ref={innerRef} className="space-y-3">
+        <div ref={innerRef} className="space-y-2.5">
           {hasMessages ? (
             messages.map((msg) => (
               <ChatMessageRow
@@ -607,7 +935,6 @@ export function SessionChatView({ run, taskRuns, onSelectRun }: SessionChatViewP
               <p className="mt-1 whitespace-pre-wrap">{run.error}</p>
             </div>
           )}
-          {/* Spacer so the last bubble isn't flush against the viewport edge. */}
           <div className="h-2" />
         </div>
       </div>
