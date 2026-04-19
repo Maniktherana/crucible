@@ -85,7 +85,8 @@ type ChatMessage =
       prompt: string;
       childRunId?: string;
     })
-  | (BaseMsg & { kind: "step-start"; stepNumber: number });
+  | (BaseMsg & { kind: "step-start"; stepNumber: number })
+  | (BaseMsg & { kind: "screenshot"; path: string; label: string });
 
 // --- Payload helpers --------------------------------------------------------
 
@@ -179,6 +180,33 @@ function extractSpawnPrompt(command: string): string {
   return command;
 }
 
+const SCREENSHOT_MARKER_RE = /^SCREENSHOT_SAVED:\s+(\S+)$/gm;
+const AGENT_BROWSER_SCREENSHOT_RE =
+  /agent-browser\s+screenshot\s+(?:--\S+\s+)*([^\s"'`]+\.(?:png|jpe?g|webp))/i;
+
+function extractScreenshotPathsFromText(text: string): string[] {
+  if (!text) return [];
+  const re = new RegExp(SCREENSHOT_MARKER_RE.source, "gm");
+  const paths: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m[1]) paths.push(m[1]);
+  }
+  return paths;
+}
+
+function extractScreenshotPathFromBashCommand(command: string): string | null {
+  if (!command) return null;
+  const match = AGENT_BROWSER_SCREENSHOT_RE.exec(command);
+  return match?.[1] ?? null;
+}
+
+function labelFromPath(path: string): string {
+  if (/-before\.(png|jpe?g|webp)$/i.test(path)) return "before";
+  if (/-after\.(png|jpe?g|webp)$/i.test(path)) return "after";
+  return "";
+}
+
 // --- Parser -----------------------------------------------------------------
 
 /**
@@ -253,6 +281,22 @@ function parseMessages(events: CrucibleRunEvent[], childRunIds: string[]): ChatM
       if (!hasStableKey && tryPrefixExtend(content, event.at, partType)) continue;
 
       upsert(key, { id: key, kind: partType, content, timestamp: event.at });
+
+      // Extract screenshot markers from text parts as separate screenshot messages.
+      if (partType === "text") {
+        const screenshotPaths = extractScreenshotPathsFromText(content);
+        for (const scPath of screenshotPaths) {
+          const sKey = `${key}:screenshot:${scPath}`;
+          upsert(sKey, {
+            id: sKey,
+            kind: "screenshot",
+            path: scPath,
+            label: labelFromPath(scPath),
+            timestamp: event.at,
+          });
+        }
+      }
+
       continue;
     }
 
@@ -511,6 +555,62 @@ function StepDivider({ stepNumber }: { stepNumber: number }) {
   );
 }
 
+function ScreenshotInline({ path }: { path: string }) {
+  const [failed, setFailed] = useState(false);
+  const url = `/api/crucible/files?path=${encodeURIComponent(path)}`;
+  if (failed) {
+    return (
+      <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+        <span className="inline-block h-3 w-3 animate-pulse rounded-full bg-muted-foreground/40" />
+        Waiting for screenshot…
+      </div>
+    );
+  }
+  return (
+    <img
+      src={url}
+      alt="agent-browser screenshot"
+      className="max-h-72 w-full bg-background object-contain"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+function ScreenshotMessage({ path, label }: { path: string; label: string }) {
+  const [failed, setFailed] = useState(false);
+  const url = `/api/crucible/files?path=${encodeURIComponent(path)}`;
+  const labelBadge = label === "before" ? "Before" : label === "after" ? "After" : "Screenshot";
+
+  return (
+    <div className="flex gap-2">
+      <Badge variant="outline" size="sm" className="mt-0.5 shrink-0 text-[10px]">
+        📸 {labelBadge}
+      </Badge>
+      <div className="min-w-0 flex-1 overflow-hidden rounded-lg border bg-muted/20">
+        {failed ? (
+          <div className="flex items-center gap-2 p-3 text-xs text-muted-foreground">
+            <span className="inline-block h-3 w-3 animate-pulse rounded-full bg-muted-foreground/40" />
+            Waiting for screenshot…
+            <span className="ml-auto truncate font-mono text-[10px] opacity-60">{path}</span>
+          </div>
+        ) : (
+          <>
+            <img
+              src={url}
+              alt={`agent-browser ${labelBadge.toLowerCase()} screenshot`}
+              className="max-h-72 w-full bg-background object-contain"
+              onError={() => setFailed(true)}
+            />
+            <div className="flex items-center gap-2 border-t bg-muted/30 px-2 py-1 text-[10px] text-muted-foreground">
+              <span className="truncate font-mono">{path}</span>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function BashMessage({
   command,
   status,
@@ -543,6 +643,18 @@ function BashMessage({
         <span className="text-muted-foreground">$ </span>
         {command || "(no command)"}
       </pre>
+      {(() => {
+        const screenshotPath =
+          extractScreenshotPathFromBashCommand(command) ??
+          extractScreenshotPathsFromText(output)[0] ??
+          null;
+        if (!screenshotPath) return null;
+        return (
+          <div className="border-t bg-background/40">
+            <ScreenshotInline path={screenshotPath} />
+          </div>
+        );
+      })()}
       {(output.trim() || exitCode != null) && (
         <div className="border-t border-border/60">
           <div className="flex items-center gap-2 px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -773,10 +885,12 @@ function ChatMessageRow({
   message,
   taskRunMap,
   onSelectRun,
+  inlineBashScreenshotPaths,
 }: {
   message: ChatMessage;
   taskRunMap: Map<string, CrucibleRun>;
   onSelectRun?: (id: string) => void;
+  inlineBashScreenshotPaths: Set<string>;
 }) {
   switch (message.kind) {
     case "text":
@@ -842,6 +956,9 @@ function ChatMessageRow({
         />
       );
     }
+    case "screenshot":
+      if (inlineBashScreenshotPaths.has(message.path)) return null;
+      return <ScreenshotMessage path={message.path} label={message.label} />;
   }
 }
 
@@ -858,6 +975,17 @@ export function SessionChatView({ run, taskRuns, onSelectRun }: SessionChatViewP
     for (const r of taskRuns) map.set(r.id, r);
     return map;
   }, [taskRuns]);
+
+  const inlineBashScreenshotPaths = useMemo(() => {
+    const paths = new Set<string>();
+    for (const m of messages) {
+      if (m.kind !== "tool-bash") continue;
+      const cmdPath = extractScreenshotPathFromBashCommand(m.command);
+      if (cmdPath) paths.add(cmdPath);
+      for (const p of extractScreenshotPathsFromText(m.output)) paths.add(p);
+    }
+    return paths;
+  }, [messages]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
@@ -917,6 +1045,7 @@ export function SessionChatView({ run, taskRuns, onSelectRun }: SessionChatViewP
                 key={msg.id}
                 message={msg}
                 taskRunMap={taskRunMap}
+                inlineBashScreenshotPaths={inlineBashScreenshotPaths}
                 {...(onSelectRun ? { onSelectRun } : {})}
               />
             ))

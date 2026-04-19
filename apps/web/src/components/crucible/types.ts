@@ -25,6 +25,15 @@ export interface CrucibleRunEvent {
   outputTokens?: number;
 }
 
+export interface CrucibleAttachment {
+  id: string;
+  runId: string;
+  path: string;
+  /** "before" | "after" | "" */
+  label: string;
+  createdAt: string;
+}
+
 export interface CrucibleRun {
   id: string;
   type: CrucibleRunType;
@@ -45,6 +54,7 @@ export interface CrucibleRun {
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;
+  attachments?: CrucibleAttachment[];
   /** Run is waiting on external input (e.g. permission prompt from the agent). */
   needsInput?: boolean;
 }
