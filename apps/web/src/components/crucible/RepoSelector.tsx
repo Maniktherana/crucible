@@ -24,47 +24,6 @@ import { Spinner } from "~/components/ui/spinner";
 import type { CrucibleIssue, CrucibleRepo } from "./types";
 import { useCrucibleStore } from "./useCrucibleStore";
 
-const MOCK_REPOS: CrucibleRepo[] = [
-  {
-    name: "Maniktherana/manikrana.dev",
-    path: "/tmp/crucible/Maniktherana/manikrana.dev",
-    hasGit: true,
-  },
-];
-
-const MOCK_ISSUES: CrucibleIssue[] = [
-  {
-    number: 1,
-    title: "Add dark mode toggle",
-    body: "Add a dark/light mode toggle to the site header.",
-    labels: [{ name: "enhancement" }],
-    assignees: [],
-    state: "open",
-    url: "https://github.com/Maniktherana/manikrana.dev/issues/1",
-    html_url: "https://github.com/Maniktherana/manikrana.dev/issues/1",
-  },
-  {
-    number: 2,
-    title: "Fix mobile nav overflow",
-    body: "Navigation menu overflows on screens < 640px.",
-    labels: [{ name: "bug" }],
-    assignees: [],
-    state: "open",
-    url: "https://github.com/Maniktherana/manikrana.dev/issues/2",
-    html_url: "https://github.com/Maniktherana/manikrana.dev/issues/2",
-  },
-  {
-    number: 3,
-    title: "Add project showcase section",
-    body: "Create a projects section with cards linking to GitHub repos.",
-    labels: [{ name: "feature" }],
-    assignees: [],
-    state: "open",
-    url: "https://github.com/Maniktherana/manikrana.dev/issues/3",
-    html_url: "https://github.com/Maniktherana/manikrana.dev/issues/3",
-  },
-];
-
 async function fetchRepos(): Promise<CrucibleRepo[]> {
   try {
     const res = await fetch("/api/crucible/repos");
@@ -72,7 +31,7 @@ async function fetchRepos(): Promise<CrucibleRepo[]> {
     const data = (await res.json()) as { repos: CrucibleRepo[] };
     return data.repos;
   } catch {
-    return MOCK_REPOS;
+    return [];
   }
 }
 
@@ -84,7 +43,7 @@ async function fetchIssues(repoName: string): Promise<CrucibleIssue[]> {
     const data = (await res.json()) as { issues: CrucibleIssue[] };
     return data.issues;
   } catch {
-    return MOCK_ISSUES;
+    return [];
   }
 }
 

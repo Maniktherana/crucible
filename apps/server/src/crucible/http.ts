@@ -631,12 +631,13 @@ const handleCrucibleHttpError = (error: CrucibleHttpError) =>
 
 function parseOwnerNameFromRemote(remoteUrl: string): string | null {
   // https://github.com/owner/name.git  or  https://github.com/owner/name
-  const httpsMatch = remoteUrl.match(/github\.com\/([^/]+)\/([^/.]+)/);
+  // name can contain dots (e.g. manikrana.dev)
+  const httpsMatch = remoteUrl.match(/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/);
   if (httpsMatch) {
     return `${httpsMatch[1]}/${httpsMatch[2]}`;
   }
   // git@github.com:owner/name.git
-  const sshMatch = remoteUrl.match(/github\.com:([^/]+)\/([^/.]+)/);
+  const sshMatch = remoteUrl.match(/github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/);
   if (sshMatch) {
     return `${sshMatch[1]}/${sshMatch[2]}`;
   }

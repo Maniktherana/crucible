@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "build": {
+      "model": "opencode/claude-opus-4-7"
+    },
+    "plan": {
+      "model": "opencode/claude-opus-4-7"
+    },
+    "general": {
+      "model": "opencode/claude-sonnet-4-6"
+    },
+    "explore": {
+      "model": "opencode/claude-sonnet-4-6"
+    }
+  }
+}
