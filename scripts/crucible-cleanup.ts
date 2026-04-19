@@ -6,14 +6,16 @@
  * Reverts Crucible agent work for a given repo while preserving the repo itself
  * and its GitHub issues. Closes PRs, deletes crucible branches (remote + local),
  * removes worktrees under `.crucible-worktrees/`, clears `.crucible/progress/`
- * contents, resets `.crucible/feature-list.json` `passes` flags, and asks the
- * Crucible server to drop in-memory runs for the repo.
+ * contents, wipes the SQLite run records + NDJSON event logs for the repo,
+ * resets `.crucible/feature-list.json` `passes` flags, and asks the running
+ * Crucible server to drop in-memory runs.
  *
  * Safe to re-run; every step is idempotent and tolerates "already gone".
  */
 
+import { Database } from "bun:sqlite";
 import { execFileSync } from "node:child_process";
-import { readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
 import * as OS from "node:os";
 import * as Path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,6 +23,8 @@ import { parseArgs } from "node:util";
 
 const SCRIPT_DIR = Path.dirname(fileURLToPath(import.meta.url));
 const MONO_ROOT = Path.resolve(SCRIPT_DIR, "..");
+const CRUCIBLE_DB_PATH = Path.join(MONO_ROOT, ".crucible-data", "crucible.db");
+const CRUCIBLE_LOG_DIR = Path.join(MONO_ROOT, "repos", ".crucible-logs");
 
 interface Args {
   readonly repo: string;
@@ -59,7 +63,9 @@ function printUsage(): void {
       "     Then rm -rf '.crucible-worktrees/'.",
       "  4. git branch -D for every local 'crucible/*' branch.",
       "  5. rm -rf '.crucible/progress/*' (keeps agents.md, init.sh, config.json, etc.).",
-      "  6. DELETE /api/crucible/runs?repo=<...> on the running Crucible server.",
+      "  6. Clear persisted run records (SQLite 'crucible_runs' + NDJSON event logs).",
+      "     Uses DELETE /api/crucible/runs when the Crucible server is running; otherwise",
+      "     opens '.crucible-data/crucible.db' directly with bun:sqlite.",
       "  7. Reset every '.crucible/feature-list.json' feature's 'passes' flag to false.",
     ].join("\n"),
   );
@@ -485,7 +491,7 @@ async function clearProgressFiles(args: Args): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
-// Step f) Clear server run state
+// Step f) Clear persisted run state (SQLite + NDJSON logs) and in-memory runs
 // ---------------------------------------------------------------------------
 
 async function readJsonIfExists(filePath: string): Promise<{ readonly origin?: string } | null> {
@@ -501,6 +507,19 @@ async function readJsonIfExists(filePath: string): Promise<{ readonly origin?: s
       return null;
     }
     return null;
+  }
+}
+
+async function probeOrigin(origin: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${origin}/api/crucible/config`, {
+      method: "GET",
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(1_000),
+    });
+    return response.ok;
+  } catch {
+    return false;
   }
 }
 
@@ -522,64 +541,212 @@ async function resolveServerOrigin(): Promise<string | null> {
       }
     }
   }
+
+  // Fallback: probe common localhost ports. The dev server defaults to 13773
+  // but some users run on 3000/8080 etc. If a Crucible server answers the
+  // config probe, use it.
+  const fallbackOrigins = [
+    "http://127.0.0.1:13773",
+    "http://localhost:13773",
+    "http://127.0.0.1:3000",
+    "http://localhost:3000",
+  ];
+  for (const origin of fallbackOrigins) {
+    if (await probeOrigin(origin)) {
+      return origin;
+    }
+  }
+
   return null;
 }
 
-async function clearServerRuns(args: Args): Promise<number> {
-  console.log("\n[6/7] Clearing server-side run state");
-  const origin = await resolveServerOrigin();
-  if (!origin) {
-    console.log("  Server not running, skip run cleanup.");
-    return 0;
+/**
+ * Opens the Crucible SQLite DB read-only and returns every run ID that belongs
+ * to `repo`, including children reachable transitively through `child_run_ids`.
+ * Returns an empty array if the DB does not exist or cannot be opened.
+ */
+function dbExists(): boolean {
+  try {
+    return Bun.file(CRUCIBLE_DB_PATH).size > 0;
+  } catch {
+    return false;
+  }
+}
+
+function collectPersistedRunIds(repo: string): string[] {
+  if (!dbExists()) return [];
+
+  let db: Database;
+  try {
+    db = new Database(CRUCIBLE_DB_PATH, { readonly: true });
+  } catch {
+    return [];
   }
 
-  const url = `${origin}/api/crucible/runs?repo=${encodeURIComponent(args.repo)}`;
+  try {
+    const direct = db
+      .query<{ id: string }, { $repo: string }>("SELECT id FROM crucible_runs WHERE repo = $repo")
+      .all({ $repo: repo })
+      .map((row) => row.id);
+
+    const all = new Set(direct);
+    const queue = [...direct];
+    const childQuery = db.query<{ child_run_ids: string }, { $id: string }>(
+      "SELECT child_run_ids FROM crucible_runs WHERE id = $id",
+    );
+
+    while (queue.length > 0) {
+      const parentId = queue.pop()!;
+      const row = childQuery.get({ $id: parentId });
+      if (!row) continue;
+      let childIds: string[];
+      try {
+        childIds = JSON.parse(row.child_run_ids) as string[];
+      } catch {
+        continue;
+      }
+      for (const childId of childIds) {
+        if (!all.has(childId)) {
+          all.add(childId);
+          queue.push(childId);
+        }
+      }
+    }
+
+    return [...all];
+  } finally {
+    db.close();
+  }
+}
+
+function deleteSqliteRunsDirect(ids: ReadonlyArray<string>): number {
+  if (ids.length === 0) return 0;
+  let db: Database;
+  try {
+    db = new Database(CRUCIBLE_DB_PATH);
+  } catch {
+    return 0;
+  }
+  try {
+    db.exec("PRAGMA journal_mode = WAL");
+    const stmt = db.prepare("DELETE FROM crucible_runs WHERE id = $id");
+    let deleted = 0;
+    const txn = db.transaction((batch: ReadonlyArray<string>) => {
+      for (const id of batch) {
+        const result = stmt.run({ $id: id });
+        deleted += typeof result.changes === "number" ? result.changes : 0;
+      }
+    });
+    txn(ids);
+    return deleted;
+  } finally {
+    db.close();
+  }
+}
+
+async function deleteNdjsonLogs(ids: ReadonlyArray<string>, dryRun: boolean): Promise<number> {
+  let removed = 0;
+  for (const id of ids) {
+    const logPath = Path.join(CRUCIBLE_LOG_DIR, `${id}.ndjson`);
+    if (!(await pathExists(logPath))) continue;
+    console.log(`    ${dryPrefix(dryRun)}rm ${logPath}`);
+    if (dryRun) {
+      removed++;
+      continue;
+    }
+    try {
+      await unlink(logPath);
+      removed++;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`      Failed: ${message}`);
+    }
+  }
+  return removed;
+}
+
+interface ClearPersistedResult {
+  readonly runsCleared: number;
+  readonly logsCleared: number;
+  readonly viaServer: boolean;
+}
+
+async function clearPersistedRuns(args: Args): Promise<ClearPersistedResult> {
+  console.log("\n[6/7] Clearing persisted runs (SQLite + NDJSON logs)");
+
+  // Enumerate affected run IDs from SQLite first so we know which NDJSON logs
+  // to delete regardless of which path (server vs direct) handles the DB.
+  const ids = collectPersistedRunIds(args.repo);
+  console.log(
+    `  Found ${ids.length} persisted run(s) for '${args.repo}'${ids.length > 0 ? " (incl. transitive children)" : ""}.`,
+  );
+
+  const origin = await resolveServerOrigin();
   const token = process.env.T3CODE_BEARER_TOKEN?.trim();
   const headers: Record<string, string> = { accept: "application/json" };
   if (token) {
     headers.authorization = `Bearer ${token}`;
   }
 
-  if (args.dryRun) {
-    console.log(`  ${dryPrefix(args.dryRun)}GET ${origin}/api/crucible/runs?repo=${args.repo}`);
-    try {
-      const response = await fetch(
-        `${origin}/api/crucible/runs?repo=${encodeURIComponent(args.repo)}`,
-        {
-          method: "GET",
-          headers,
-        },
-      );
-      if (!response.ok) {
-        console.warn(`    Probe failed with status ${response.status}`);
-        return 0;
+  let runsCleared = 0;
+  let viaServer = false;
+
+  if (origin) {
+    const url = `${origin}/api/crucible/runs?repo=${encodeURIComponent(args.repo)}`;
+    console.log(`  ${dryPrefix(args.dryRun)}DELETE ${url}`);
+    if (args.dryRun) {
+      runsCleared = ids.length;
+      viaServer = true;
+    } else {
+      try {
+        const response = await fetch(url, { method: "DELETE", headers });
+        if (!response.ok) {
+          const text = await response.text().catch(() => "");
+          console.warn(`    Failed with status ${response.status}: ${text}`);
+        } else {
+          const data = (await response.json()) as { deleted?: number };
+          runsCleared = typeof data.deleted === "number" ? data.deleted : 0;
+          viaServer = true;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`    Request failed: ${message}`);
       }
-      const data = (await response.json()) as unknown;
-      const count = Array.isArray(data) ? data.length : 0;
-      console.log(`    Would delete ${count} run(s).`);
-      return count;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`    Probe failed: ${message}`);
-      return 0;
+    }
+  } else {
+    console.log("  Server not running; falling back to direct SQLite write.");
+  }
+
+  // If the server didn't handle it (down, failed, or no runtime state), delete
+  // sqlite rows directly. When the server DID handle it, do a belt-and-suspenders
+  // sweep for any rows still matching `repo` (guards against partial failures).
+  const residualIds = args.dryRun ? [] : collectPersistedRunIds(args.repo);
+  const idsToDelete = viaServer ? residualIds : ids;
+  if (idsToDelete.length > 0) {
+    const label = viaServer ? "residual SQLite row(s)" : `SQLite row(s) from ${CRUCIBLE_DB_PATH}`;
+    console.log(`  ${dryPrefix(args.dryRun)}direct SQLite DELETE ${idsToDelete.length} ${label}`);
+    if (!args.dryRun) {
+      try {
+        const deleted = deleteSqliteRunsDirect(idsToDelete);
+        if (!viaServer) {
+          runsCleared = deleted;
+        } else if (deleted > 0) {
+          console.log(`    Swept ${deleted} residual row(s) the server missed.`);
+          runsCleared += deleted;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`    Direct SQLite delete failed: ${message}`);
+      }
+    } else if (!viaServer) {
+      runsCleared = idsToDelete.length;
     }
   }
 
-  console.log(`  DELETE ${url}`);
-  try {
-    const response = await fetch(url, { method: "DELETE", headers });
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      console.warn(`    Failed with status ${response.status}: ${text}`);
-      return 0;
-    }
-    const data = (await response.json()) as { deleted?: number };
-    return typeof data.deleted === "number" ? data.deleted : 0;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`    Request failed: ${message}`);
-    return 0;
-  }
+  // Delete per-run NDJSON event logs. The server never removes these itself.
+  const logsCleared = ids.length > 0 ? await deleteNdjsonLogs(ids, args.dryRun) : 0;
+
+  return { runsCleared, logsCleared, viaServer };
 }
 
 // ---------------------------------------------------------------------------
@@ -669,7 +836,7 @@ async function main(): Promise<void> {
   const worktreesRemoved = await removeWorktrees(args);
   const localDeleted = await deleteLocalCrucibleBranches(args);
   const progressCleared = await clearProgressFiles(args);
-  const runsCleared = await clearServerRuns(args);
+  const persisted = await clearPersistedRuns(args);
   await resetFeatureList(args);
 
   const branchesDeleted = closed + remoteDeleted + localDeleted;
@@ -682,7 +849,8 @@ async function main(): Promise<void> {
       `  ${branchesDeleted} branch(es) deleted,`,
       `  ${worktreesRemoved} worktree(s) removed,`,
       `  ${progressCleared} progress file(s) cleared,`,
-      `  ${runsCleared} run(s) cleared`,
+      `  ${persisted.runsCleared} run(s) cleared (${persisted.viaServer ? "via server" : "direct SQLite"}),`,
+      `  ${persisted.logsCleared} NDJSON event log(s) removed`,
       args.dryRun ? "  (no changes were made)" : "",
     ]
       .filter((line) => line.length > 0)

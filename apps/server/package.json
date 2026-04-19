@@ -1,14 +1,14 @@
 {
-  "name": "t3",
+  "name": "crucible-swe",
   "version": "0.0.20",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/pingdotgg/t3code",
+    "url": "https://github.com/Maniktherana/crucible",
     "directory": "apps/server"
   },
   "bin": {
-    "t3": "./dist/bin.mjs"
+    "crucible-swe": "./dist/bin.mjs"
   },
   "files": [
     "dist"

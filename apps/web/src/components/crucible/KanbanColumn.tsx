@@ -1,4 +1,5 @@
 import { Badge } from "~/components/ui/badge";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "~/components/ui/empty";
 import { ScrollArea } from "~/components/ui/scroll-area";
 
 import type { CrucibleIssue, KanbanCard, KanbanColumnId } from "./types";
@@ -29,19 +30,28 @@ export function KanbanColumn({
         <Badge variant="secondary">{cards.length}</Badge>
       </div>
       <ScrollArea className="flex-1 px-2 pb-2">
-        <div className="flex flex-col gap-2">
-          {cards.map((card) => (
-            <IssueCard
-              key={card.issue.number}
-              card={card}
-              onClick={() => setSelectedCard(card)}
-              starting={card.issue.number === startingIssueNumber}
-              {...(columnId === "todo" && onStartIssue
-                ? { onStart: () => onStartIssue(card.issue) }
-                : {})}
-            />
-          ))}
-        </div>
+        {cards.length === 0 && columnId === "todo" ? (
+          <Empty className="py-8">
+            <EmptyHeader>
+              <EmptyTitle>No open issues found</EmptyTitle>
+              <EmptyDescription>Create issues on GitHub to see them here</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {cards.map((card) => (
+              <IssueCard
+                key={card.issue.number}
+                card={card}
+                onClick={() => setSelectedCard(card)}
+                starting={card.issue.number === startingIssueNumber}
+                {...(columnId === "todo" && onStartIssue
+                  ? { onStart: () => onStartIssue(card.issue) }
+                  : {})}
+              />
+            ))}
+          </div>
+        )}
       </ScrollArea>
     </div>
   );
