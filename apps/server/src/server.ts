@@ -10,6 +10,16 @@ import {
   staticAndDevRouteLayer,
   browserApiCorsLayer,
 } from "./http.ts";
+import {
+  crucibleConfigRouteLayer,
+  crucibleRunCreateRouteLayer,
+  crucibleRunGetRouteLayer,
+  crucibleRunListRouteLayer,
+  crucibleReposListRouteLayer,
+  crucibleReposCloneRouteLayer,
+  crucibleRepoIssuesRouteLayer,
+  crucibleFilesRouteLayer,
+} from "./crucible/http.ts";
 import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import { OpenLive } from "./open.ts";
@@ -261,6 +271,14 @@ export const makeRoutesLayer = Layer.mergeAll(
   authSessionRouteLayer,
   authWebSocketTokenRouteLayer,
   attachmentsRouteLayer,
+  crucibleConfigRouteLayer,
+  crucibleRunCreateRouteLayer,
+  crucibleRunGetRouteLayer,
+  crucibleRunListRouteLayer,
+  crucibleReposListRouteLayer,
+  crucibleReposCloneRouteLayer,
+  crucibleRepoIssuesRouteLayer,
+  crucibleFilesRouteLayer,
   orchestrationDispatchRouteLayer,
   orchestrationSnapshotRouteLayer,
   otlpTracesProxyRouteLayer,
