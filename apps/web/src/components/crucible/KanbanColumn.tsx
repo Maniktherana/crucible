@@ -10,9 +10,16 @@ interface KanbanColumnProps {
   columnId: KanbanColumnId;
   cards: KanbanCard[];
   onStartIssue?: (issue: CrucibleIssue) => void;
+  startingIssueNumber?: number | null;
 }
 
-export function KanbanColumn({ title, columnId, cards, onStartIssue }: KanbanColumnProps) {
+export function KanbanColumn({
+  title,
+  columnId,
+  cards,
+  onStartIssue,
+  startingIssueNumber,
+}: KanbanColumnProps) {
   const setSelectedCard = useCrucibleStore((s) => s.setSelectedCard);
 
   return (
@@ -28,6 +35,7 @@ export function KanbanColumn({ title, columnId, cards, onStartIssue }: KanbanCol
               key={card.issue.number}
               card={card}
               onClick={() => setSelectedCard(card)}
+              starting={card.issue.number === startingIssueNumber}
               {...(columnId === "todo" && onStartIssue
                 ? { onStart: () => onStartIssue(card.issue) }
                 : {})}

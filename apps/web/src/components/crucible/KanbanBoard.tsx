@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { toastManager } from "~/components/ui/toast";
 
@@ -13,8 +13,19 @@ async function fetchRuns(repo: string): Promise<CrucibleRun[]> {
   try {
     const res = await fetch(`/api/crucible/runs?repo=${encodeURIComponent(repo)}`);
     if (!res.ok) throw new Error("fetch failed");
-    const data = (await res.json()) as { runs: CrucibleRun[] };
-    return data.runs;
+    const data: unknown = await res.json();
+    // The server returns a raw array, not { runs: [...] }.
+    if (Array.isArray(data)) return data as CrucibleRun[];
+    // Defensive: also handle { runs: [...] } shape in case the API changes.
+    if (
+      data &&
+      typeof data === "object" &&
+      "runs" in data &&
+      Array.isArray((data as { runs: unknown }).runs)
+    ) {
+      return (data as { runs: CrucibleRun[] }).runs;
+    }
+    return [];
   } catch {
     return [];
   }
@@ -28,6 +39,8 @@ export function KanbanBoard() {
   const selectedCard = useCrucibleStore((s) => s.selectedCard);
   const upsertRuns = useCrucibleStore((s) => s.upsertRuns);
   const setSelectedCard = useCrucibleStore((s) => s.setSelectedCard);
+
+  const [startingIssueNumber, setStartingIssueNumber] = useState<number | null>(null);
 
   // Poll runs every 2s while a repo is selected
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -59,6 +72,7 @@ export function KanbanBoard() {
         });
         return;
       }
+      setStartingIssueNumber(issue.number);
       try {
         const res = await fetch("/api/crucible/runs", {
           method: "POST",
@@ -89,6 +103,8 @@ export function KanbanBoard() {
           title: "Failed to start agent",
           description: err instanceof Error ? err.message : "Unknown error",
         });
+      } finally {
+        setStartingIssueNumber(null);
       }
     },
     [repos, selectedRepo],
@@ -107,6 +123,7 @@ export function KanbanBoard() {
           columnId="todo"
           cards={todoCards}
           onStartIssue={handleStartIssue}
+          startingIssueNumber={startingIssueNumber}
         />
         <KanbanColumn title="In Progress" columnId="in_progress" cards={inProgressCards} />
         <KanbanColumn title="Done" columnId="done" cards={doneCards} />
