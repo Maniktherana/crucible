@@ -29,6 +29,14 @@ import {
   startObservation,
   type LangfuseSpan,
 } from "./tracing.ts";
+import {
+  initCrucibleDb,
+  loadAllRuns,
+  persistRun as dbPersistRun,
+  updateRunStatus as dbUpdateRunStatus,
+  addChildRunId as dbAddChildRunId,
+  deleteRunsByRepo as dbDeleteRunsByRepo,
+} from "./persistence.ts";
 
 // Module-scope init — async but fire-and-forget (tracing is best-effort).
 void initLangfuse();
@@ -99,6 +107,8 @@ interface CrucibleRunRecord {
   sessionId?: string;
   serverUrl?: string;
   error?: string;
+  needsInput?: boolean;
+  prUrl?: string;
   client?: OpencodeClient;
   server?: OpenCodeServerConnection;
   langfuseTraceId?: string;
@@ -123,6 +133,27 @@ const crucibleStore: CrucibleStore = globalCrucibleStore.__t3CrucibleStore ?? {
 
 if (!globalCrucibleStore.__t3CrucibleStore) {
   globalCrucibleStore.__t3CrucibleStore = crucibleStore;
+}
+
+// SQLite persistence — init DB and reload persisted runs into in-memory store.
+const DB_PATH = Path.join(REPO_ROOT, ".crucible-data", "crucible.db");
+initCrucibleDb(DB_PATH);
+
+if (crucibleStore.runs.size === 0) {
+  const persistedRuns = loadAllRuns();
+  for (const run of persistedRuns) {
+    crucibleStore.runs.set(run.id, {
+      ...run,
+      type: run.type as CrucibleRunType,
+      status: run.status as CrucibleRunStatus,
+      events: [],
+      abortController: new AbortController(),
+      childRunIds: [...run.childRunIds],
+    });
+  }
+  if (persistedRuns.length > 0) {
+    console.info(`[crucible] Reloaded ${persistedRuns.length} run(s) from SQLite.`);
+  }
 }
 
 class CrucibleHttpError extends Data.TaggedError("CrucibleHttpError")<{
@@ -271,6 +302,24 @@ function setRunStatus(run: CrucibleRunRecord, status: CrucibleRunStatus, error?:
       void flushTracing();
     }
   }
+
+  // Persist status change to SQLite
+  dbUpdateRunStatus(run.id, run.status, {
+    error: run.error,
+    startedAt: run.startedAt,
+    completedAt: run.completedAt,
+    durationMs: run.durationMs,
+    sessionId: run.sessionId,
+    serverUrl: run.serverUrl,
+  });
+
+  // If a child run completed/errored, check if the parent manager is now done
+  if ((status === "completed" || status === "error") && run.parentRunId) {
+    const parentRun = crucibleStore.runs.get(run.parentRunId);
+    if (parentRun) {
+      checkManagerCompletion(parentRun);
+    }
+  }
 }
 
 function summarizeEvent(event: unknown): { readonly type: string; readonly summary: string } {
@@ -410,6 +459,9 @@ function addChildRun(parent: CrucibleRunRecord, child: CrucibleRunRecord): void 
       spawnNote: child.spawnNote ?? null,
     },
   });
+
+  // Persist child link to SQLite
+  dbAddChildRunId(parent.id, child.id);
 }
 
 async function readFileCheck(run: CrucibleRunRecord) {
@@ -468,6 +520,8 @@ async function serializeRun(run: CrucibleRunRecord) {
     spawnCommand: run.spawnCommand ?? null,
     spawnTool: run.spawnTool ?? null,
     spawnNote: run.spawnNote ?? null,
+    prUrl: run.prUrl ?? null,
+    needsInput: run.needsInput ?? false,
     events: run.events,
     fileCheck: await readFileCheck(run),
     langfuseTraceId: run.langfuseTraceId ?? null,
@@ -485,6 +539,34 @@ async function serializeRunList(repoFilter?: string) {
     runs = runs.filter((run) => run.repo === repoFilter);
   }
   return Promise.all(runs.map((run) => serializeRun(run)));
+}
+
+function checkManagerCompletion(run: CrucibleRunRecord): void {
+  if (run.type !== "manager" || run.status !== "running") return;
+  if (run.childRunIds.length === 0) return;
+
+  const children = run.childRunIds.map((id) => crucibleStore.runs.get(id)).filter(Boolean);
+  const allDone = children.every((c) => c!.status === "completed" || c!.status === "error");
+  if (!allDone) return;
+
+  const anyError = children.some((c) => c!.status === "error");
+  const prUrls = children.map((c) => c!.prUrl).filter(Boolean);
+  if (prUrls.length > 0 && !run.prUrl) {
+    run.prUrl = prUrls.join(", ");
+  }
+
+  setRunStatus(run, anyError ? "error" : "completed");
+  pushRunEvent(run, {
+    type: "crucible.manager_completed",
+    summary: `All ${children.length} subtasks finished (${prUrls.length} PRs created)`,
+    payload: {
+      childStatuses: children.map((c) => ({
+        id: c!.id,
+        status: c!.status,
+        prUrl: c!.prUrl ?? null,
+      })),
+    },
+  });
 }
 
 async function watchRunEventStream(
@@ -510,6 +592,44 @@ async function watchRunEventStream(
         summary: summary.summary,
         payload: event,
       });
+
+      // --- BUG 1a: Detect PR creation from bash tool output ---
+      const props = event.properties as Record<string, unknown> | undefined;
+      const part = (props?.part ?? props?.status) as Record<string, unknown> | undefined;
+      if (
+        part?.type === "tool" &&
+        part.tool === "bash" &&
+        (part.state as Record<string, unknown> | undefined)?.status === "completed"
+      ) {
+        const state = part.state as Record<string, unknown>;
+        const cmd = String((state.input as Record<string, unknown> | undefined)?.command ?? "");
+        const output = String(
+          state.output ?? (state.metadata as Record<string, unknown> | undefined)?.output ?? "",
+        );
+        if (cmd.includes("gh pr create") && output.includes("github.com")) {
+          const prMatch = output.match(/https:\/\/github\.com\/[^\s]+\/pull\/\d+/);
+          if (prMatch) {
+            run.prUrl = prMatch[0];
+            pushRunEvent(run, {
+              type: "crucible.pr.detected",
+              summary: `PR created: ${run.prUrl}`,
+              payload: { prUrl: run.prUrl },
+            });
+          }
+        }
+      }
+
+      // --- BUG 1b: Detect "question" events (agent waiting for input) ---
+      if (part?.type === "question" || summary.summary.includes("question pending")) {
+        run.needsInput = true;
+        pushRunEvent(run, {
+          type: "crucible.needs_input",
+          summary: "Agent is waiting for user input — this will block until answered",
+          payload: {
+            question: (part?.state as Record<string, unknown> | undefined)?.input ?? part,
+          },
+        });
+      }
 
       if (event.type === "session.status") {
         const statusType =
@@ -544,6 +664,41 @@ async function watchRunEventStream(
       "error",
       error instanceof Error ? error.message : "Event subscription failed.",
     );
+  }
+
+  // --- BUG 1c: Stale run timeout — stream ended but run still "running" ---
+  if (run.status === "running") {
+    if (run.prUrl) {
+      setRunStatus(run, "completed");
+      pushRunEvent(run, {
+        type: "crucible.auto_completed",
+        summary: "Run completed (PR detected, event stream ended)",
+        payload: {},
+      });
+    } else {
+      // Give it 30s then check if session is still alive
+      setTimeout(async () => {
+        if (run.status !== "running") return;
+        try {
+          const session = await run.client?.session.get({
+            sessionID: run.sessionId!,
+          });
+          const info = session?.data;
+          if (!info || (info as Record<string, unknown>).status === undefined) {
+            setRunStatus(run, "completed");
+          } else {
+            const statusObj = (info as Record<string, unknown>).status as
+              | Record<string, unknown>
+              | undefined;
+            if (statusObj?.type === "idle") {
+              setRunStatus(run, "completed");
+            }
+          }
+        } catch {
+          setRunStatus(run, "error", "Event stream disconnected and session is unreachable");
+        }
+      }, 30_000);
+    }
   }
 }
 
@@ -708,6 +863,9 @@ async function startRun(
       /* tracing should never break the run */
     }
   }
+
+  // Persist to SQLite
+  dbPersistRun(run);
 
   await FS.writeFile(Path.join(directory, ".crucible-run-id"), `${run.id}\n`, "utf8");
   pushRunEvent(run, {
@@ -1063,6 +1221,9 @@ export const crucibleRunDeleteRouteLayer = HttpRouter.add(
       crucibleStore.runs.delete(id);
     }
 
+    // Delete from SQLite
+    dbDeleteRunsByRepo(repo);
+
     return HttpServerResponse.jsonUnsafe({ deleted: ids.size }, { status: 200 });
   }).pipe(
     Effect.catchTag("AuthError", respondToAuthError),
@@ -1119,6 +1280,87 @@ export const crucibleRunLogRouteLayer = HttpRouter.add(
     });
 
     return HttpServerResponse.jsonUnsafe({ events }, { status: 200 });
+  }).pipe(
+    Effect.catchTag("AuthError", respondToAuthError),
+    Effect.catchTag("CrucibleHttpError", handleCrucibleHttpError),
+  ),
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/crucible/runs/:runId/gh-status — poll GitHub PR status
+// ---------------------------------------------------------------------------
+
+const ghStatusCache = new Map<string, { at: number; data: unknown }>();
+const GH_STATUS_CACHE_TTL_MS = 10_000;
+
+export const crucibleRunGhStatusRouteLayer = HttpRouter.add(
+  "GET",
+  "/api/crucible/runs/:runId/gh-status",
+  Effect.gen(function* () {
+    yield* requireCrucibleAccess;
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const url = HttpServerRequest.toURL(request);
+    if (Option.isNone(url)) {
+      return yield* new CrucibleHttpError({ message: "Invalid request URL.", status: 400 });
+    }
+
+    // Path: /api/crucible/runs/:runId/gh-status → segments[3] = runId
+    const segments = url.value.pathname.split("/").filter(Boolean);
+    const runId = segments[3];
+    if (!runId) {
+      return yield* new CrucibleHttpError({ message: "Run id is required.", status: 400 });
+    }
+
+    const run = crucibleStore.runs.get(decodeURIComponent(runId));
+    if (!run) {
+      return yield* new CrucibleHttpError({ message: "Run not found.", status: 404 });
+    }
+
+    if (!run.prUrl) {
+      return HttpServerResponse.jsonUnsafe({ status: "no_pr" }, { status: 200 });
+    }
+
+    // Parse PR number + repo from the URL
+    const prMatch = run.prUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
+    if (!prMatch) {
+      return HttpServerResponse.jsonUnsafe({ status: "no_pr", raw: run.prUrl }, { status: 200 });
+    }
+
+    const repoSlug = prMatch[1]!;
+    const prNumber = prMatch[2]!;
+    const cacheKey = `${repoSlug}#${prNumber}`;
+
+    // Check cache
+    const cached = ghStatusCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < GH_STATUS_CACHE_TTL_MS) {
+      return HttpServerResponse.jsonUnsafe(cached.data, { status: 200 });
+    }
+
+    const ghData = yield* Effect.tryPromise({
+      try: async () => {
+        const output = execSync(
+          `gh pr view ${shellQuote(prNumber)} --repo ${shellQuote(repoSlug)} --json state,statusCheckRollup,mergeable,mergedAt`,
+          {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+            timeout: 15_000,
+          },
+        );
+        return JSON.parse(output) as unknown;
+      },
+      catch: (cause) =>
+        new CrucibleHttpError({
+          message:
+            cause instanceof Error
+              ? `Failed to fetch PR status: ${cause.message}`
+              : "Failed to fetch PR status.",
+          status: 500,
+          cause,
+        }),
+    });
+
+    ghStatusCache.set(cacheKey, { at: Date.now(), data: ghData });
+    return HttpServerResponse.jsonUnsafe(ghData, { status: 200 });
   }).pipe(
     Effect.catchTag("AuthError", respondToAuthError),
     Effect.catchTag("CrucibleHttpError", handleCrucibleHttpError),

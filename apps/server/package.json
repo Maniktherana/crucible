@@ -15,7 +15,7 @@
   ],
   "type": "module",
   "scripts": {
-    "dev": "node --watch src/bin.ts",
+    "dev": "node --env-file=../../.env --watch src/bin.ts",
     "build": "node scripts/cli.ts build",
     "build:bundle": "tsdown",
     "start": "node dist/bin.mjs",
@@ -35,6 +35,7 @@
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/sdk-node": "^0.215.0",
     "@pierre/diffs": "^1.1.0-beta.16",
+    "better-sqlite3": "^12.9.0",
     "effect": "catalog:",
     "node-pty": "^1.1.0",
     "open": "^10.1.0"
@@ -45,6 +46,7 @@
     "@t3tools/contracts": "workspace:*",
     "@t3tools/shared": "workspace:*",
     "@t3tools/web": "workspace:*",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/bun": "catalog:",
     "@types/node": "catalog:",
     "effect-acp": "workspace:*",
