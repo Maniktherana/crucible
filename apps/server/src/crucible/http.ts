@@ -20,11 +20,14 @@ import {
   createOpenCodeSdkClient,
   type OpenCodeServerConnection,
 } from "../provider/opencodeRuntime.ts";
+import { buildManagerPrompt, buildTaskPrompt } from "./prompts.ts";
+import { EVAL_TASKS, checkEvalOutcome } from "./eval.ts";
 
 const MAX_STORED_EVENTS = 200;
 const MAX_FILE_PREVIEW_CHARS = 2_000;
 const REPO_ROOT = Path.resolve(Path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 const SPAWN_SUBTASK_SCRIPT_PATH = Path.join(REPO_ROOT, "scripts", "spawn-subtask.ts");
+const SUBTASK_STATUS_SCRIPT_PATH = Path.join(REPO_ROOT, "scripts", "subtask-status.ts");
 
 type CrucibleRunType = "manager" | "task";
 type CrucibleRunStatus = "starting" | "running" | "completed" | "error";
@@ -43,6 +46,11 @@ const CrucibleRunStartInput = Schema.Struct({
   type: Schema.optionalKey(Schema.Literals(["manager", "task"])),
   repo: Schema.optionalKey(Schema.String),
   issueNumber: Schema.optionalKey(Schema.Number),
+  issueTitle: Schema.optionalKey(Schema.String),
+  issueBody: Schema.optionalKey(Schema.String),
+  subtaskDescription: Schema.optionalKey(Schema.String),
+  taskBranch: Schema.optionalKey(Schema.String),
+  agentBrowserAvailable: Schema.optionalKey(Schema.Boolean),
 });
 
 type CrucibleRunStartInput = typeof CrucibleRunStartInput.Type;
@@ -470,18 +478,50 @@ async function startRun(
     ...(spawnNote !== undefined ? { spawnNote } : {}),
   };
 
-  const plannerPrompt = plannerMode
-    ? [
-        "Planner mode is enabled.",
-        "You can delegate work by running this command from bash:",
-        `${shellQuote("bun")} ${shellQuote(SPAWN_SUBTASK_SCRIPT_PATH)} --parent-run-id ${shellQuote(run.id)} "<prompt>"`,
-        "That command creates a child Crucible run in a fresh directory and prints JSON.",
-        "Use it when delegation helps. Keep child prompts small and explicit.",
-        "If you need a fixed child directory, add --directory <path>.",
-        "",
-        input.prompt.trim(),
-      ].join("\n")
-    : prompt;
+  const agentBrowserAvailable = input.agentBrowserAvailable === true;
+  const spawnCmd = `bun ${SPAWN_SUBTASK_SCRIPT_PATH}`;
+  const statusCmd = `bun ${SUBTASK_STATUS_SCRIPT_PATH}`;
+
+  // Build the dispatch prompt using the real prompt templates when we have
+  // enough context; fall back to the raw prompt for backward compatibility.
+  let dispatchPrompt: string;
+
+  if (
+    runType === "manager" &&
+    plannerMode &&
+    issueNumber !== undefined &&
+    input.issueTitle &&
+    input.issueBody
+  ) {
+    dispatchPrompt = buildManagerPrompt({
+      issueNumber,
+      issueTitle: input.issueTitle.trim(),
+      issueBody: input.issueBody.trim(),
+      repo,
+      repoPath: directory,
+      spawnCommand: spawnCmd,
+      statusCommand: statusCmd,
+      runId: run.id,
+      agentBrowserAvailable,
+    });
+  } else if (
+    runType === "task" &&
+    input.subtaskDescription &&
+    input.taskBranch &&
+    issueNumber !== undefined
+  ) {
+    dispatchPrompt = buildTaskPrompt({
+      subtaskDescription: input.subtaskDescription.trim(),
+      repo,
+      repoPath: directory,
+      issueNumber,
+      agentBrowserAvailable,
+      taskBranch: input.taskBranch.trim(),
+      runId: run.id,
+    });
+  } else {
+    dispatchPrompt = prompt;
+  }
 
   if (parentRunId) {
     const parentRun = crucibleStore.runs.get(parentRunId);
@@ -573,14 +613,14 @@ async function startRun(
 
     await client.session.promptAsync({
       sessionID: session.data.id,
-      parts: [{ type: "text", text: plannerPrompt }],
+      parts: [{ type: "text", text: dispatchPrompt }],
     });
 
     pushRunEvent(run, {
       type: "prompt.sent",
       summary: "Prompt sent to OpenCode",
       payload: {
-        prompt: plannerPrompt,
+        prompt: dispatchPrompt,
       },
     });
 
@@ -782,6 +822,85 @@ export const crucibleRunListRouteLayer = HttpRouter.add(
   ),
 );
 
+// ---------------------------------------------------------------------------
+// DELETE /api/crucible/runs — purge runs for a repo (and orphan children)
+// ---------------------------------------------------------------------------
+
+function collectRepoRunIds(repo: string): Set<string> {
+  const directMatches = new Set<string>();
+  for (const run of crucibleStore.runs.values()) {
+    if (run.repo && run.repo === repo) {
+      directMatches.add(run.id);
+    }
+  }
+
+  // Walk parent -> child transitively so orphan children (spawned without --repo)
+  // get swept along with their matched ancestor.
+  const toVisit = [...directMatches];
+  while (toVisit.length > 0) {
+    const parentId = toVisit.pop()!;
+    const parent = crucibleStore.runs.get(parentId);
+    if (!parent) continue;
+    for (const childId of parent.childRunIds) {
+      if (directMatches.has(childId)) continue;
+      directMatches.add(childId);
+      toVisit.push(childId);
+    }
+  }
+
+  return directMatches;
+}
+
+function teardownRun(run: CrucibleRunRecord): void {
+  try {
+    run.abortController.abort();
+  } catch {
+    // Abort can throw if already aborted; ignore.
+  }
+  try {
+    run.server?.close();
+  } catch {
+    // Server close is best-effort during teardown.
+  }
+}
+
+export const crucibleRunDeleteRouteLayer = HttpRouter.add(
+  "DELETE",
+  "/api/crucible/runs",
+  Effect.gen(function* () {
+    yield* requireCrucibleAccess;
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const url = HttpServerRequest.toURL(request);
+    if (Option.isNone(url)) {
+      return yield* new CrucibleHttpError({
+        message: "Invalid request URL.",
+        status: 400,
+      });
+    }
+
+    const repo = (url.value.searchParams.get("repo") ?? "").trim();
+    if (repo.length === 0) {
+      return yield* new CrucibleHttpError({
+        message: "repo query parameter is required.",
+        status: 400,
+      });
+    }
+
+    const ids = collectRepoRunIds(repo);
+    for (const id of ids) {
+      const run = crucibleStore.runs.get(id);
+      if (!run) continue;
+      teardownRun(run);
+      crucibleStore.runs.delete(id);
+    }
+
+    return HttpServerResponse.jsonUnsafe({ deleted: ids.size }, { status: 200 });
+  }).pipe(
+    Effect.catchTag("AuthError", respondToAuthError),
+    Effect.catchTag("CrucibleHttpError", handleCrucibleHttpError),
+  ),
+);
+
 export const crucibleRunGetRouteLayer = HttpRouter.add(
   "GET",
   "/api/crucible/runs/:runId",
@@ -843,16 +962,25 @@ export const crucibleReposListRouteLayer = HttpRouter.add(
   Effect.gen(function* () {
     yield* requireCrucibleAccess;
     const serverConfig = yield* ServerConfig;
-    const workspaceDir = serverConfig.cwd;
+    const reposDir = Path.join(serverConfig.cwd, "repos");
 
     const repos = yield* Effect.tryPromise({
       try: async () => {
-        const entries = await FS.readdir(workspaceDir, { withFileTypes: true });
+        let entries;
+        try {
+          entries = await FS.readdir(reposDir, { withFileTypes: true });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+            return [];
+          }
+          throw error;
+        }
+
         const results: { name: string; path: string; hasGit: boolean }[] = [];
 
         for (const entry of entries) {
           if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-          const dirPath = Path.join(workspaceDir, entry.name);
+          const dirPath = Path.join(reposDir, entry.name);
 
           let hasGit = false;
           try {
@@ -916,7 +1044,7 @@ export const crucibleReposCloneRouteLayer = HttpRouter.add(
     );
 
     const serverConfig = yield* ServerConfig;
-    const workspaceDir = serverConfig.cwd;
+    const reposDir = Path.join(serverConfig.cwd, "repos");
     const repoUrl = payload.url.trim();
 
     if (repoUrl.length === 0) {
@@ -928,7 +1056,7 @@ export const crucibleReposCloneRouteLayer = HttpRouter.add(
 
     const ownerName = parseOwnerNameFromRemote(repoUrl);
     const repoBaseName = ownerName?.split("/")[1] ?? Path.basename(repoUrl, ".git");
-    const targetPath = Path.join(workspaceDir, repoBaseName);
+    const targetPath = Path.join(reposDir, repoBaseName);
 
     const repo = yield* Effect.tryPromise({
       try: async () => {
@@ -946,6 +1074,7 @@ export const crucibleReposCloneRouteLayer = HttpRouter.add(
           // does not exist yet, proceed to clone
         }
 
+        await FS.mkdir(reposDir, { recursive: true });
         execSync(`git clone ${shellQuote(repoUrl)} ${shellQuote(targetPath)}`, {
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
@@ -1094,6 +1223,164 @@ export const crucibleFilesRouteLayer = HttpRouter.add(
         "cache-control": "no-store",
       },
     });
+  }).pipe(
+    Effect.catchTag("AuthError", respondToAuthError),
+    Effect.catchTag("CrucibleHttpError", handleCrucibleHttpError),
+  ),
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/crucible/eval/run — run eval tasks and verify outcomes
+// ---------------------------------------------------------------------------
+
+const EVAL_POLL_INTERVAL_MS = 5_000;
+const EVAL_RUN_TIMEOUT_MS = 10 * 60 * 1_000; // 10 minutes per task
+
+const CrucibleEvalRunInput = Schema.Struct({
+  taskIds: Schema.optionalKey(Schema.Array(Schema.String)),
+});
+
+function waitForRunCompletion(runId: string, timeoutMs: number): Promise<CrucibleRunRecord> {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + timeoutMs;
+
+    const poll = () => {
+      const run = crucibleStore.runs.get(runId);
+      if (!run) {
+        reject(
+          new CrucibleHttpError({
+            message: `Run '${runId}' disappeared from store.`,
+            status: 500,
+          }),
+        );
+        return;
+      }
+      if (run.status === "completed" || run.status === "error") {
+        resolve(run);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        reject(
+          new CrucibleHttpError({
+            message: `Run '${runId}' did not complete within ${timeoutMs}ms.`,
+            status: 504,
+          }),
+        );
+        return;
+      }
+      setTimeout(poll, EVAL_POLL_INTERVAL_MS);
+    };
+
+    poll();
+  });
+}
+
+export const crucibleEvalRunRouteLayer = HttpRouter.add(
+  "POST",
+  "/api/crucible/eval/run",
+  Effect.gen(function* () {
+    yield* requireCrucibleAccess;
+    const payload = yield* HttpServerRequest.schemaBodyJson(CrucibleEvalRunInput).pipe(
+      Effect.mapError(
+        (cause) =>
+          new CrucibleHttpError({
+            message: "Invalid eval run payload.",
+            status: 400,
+            cause,
+          }),
+      ),
+    );
+    const serverSettings = yield* ServerSettingsService;
+    const settings = yield* serverSettings.getSettings;
+
+    const requestedIds = payload.taskIds;
+    const tasks =
+      requestedIds && requestedIds.length > 0
+        ? EVAL_TASKS.filter((t) => requestedIds.includes(t.id))
+        : [...EVAL_TASKS];
+
+    if (tasks.length === 0) {
+      return yield* new CrucibleHttpError({
+        message: "No matching eval tasks found.",
+        status: 400,
+      });
+    }
+
+    interface EvalRunResult {
+      taskId: string;
+      passed: boolean;
+      duration: number;
+      details?: Readonly<Record<string, unknown>>;
+    }
+
+    const opencodeSettings = settings.providers.opencode;
+    const results = yield* Effect.tryPromise({
+      try: async () => {
+        const out: EvalRunResult[] = [];
+
+        for (const task of tasks) {
+          const startTime = Date.now();
+          const taskDir = Path.join(
+            OS.tmpdir(),
+            `crucible-eval-${task.id}-${randomUUID().slice(0, 8)}`,
+          );
+
+          let result: EvalRunResult;
+          try {
+            const run = await startRun(
+              {
+                directory: taskDir,
+                prompt: task.issueBody,
+                title: `Eval: ${task.issueTitle}`,
+                repo: task.repo,
+                issueNumber: 0,
+                type: "task",
+                plannerMode: false,
+              },
+              opencodeSettings,
+            );
+
+            const completedRun = await waitForRunCompletion(run.id, EVAL_RUN_TIMEOUT_MS);
+            const outcome = await checkEvalOutcome(task, completedRun.directory);
+            const duration = Date.now() - startTime;
+
+            result = {
+              taskId: task.id,
+              passed: outcome.passed,
+              duration,
+              details: {
+                ...outcome.details,
+                runId: completedRun.id,
+                runStatus: completedRun.status,
+                ...(outcome.reason ? { reason: outcome.reason } : {}),
+              },
+            };
+          } catch (error) {
+            const duration = Date.now() - startTime;
+            result = {
+              taskId: task.id,
+              passed: false,
+              duration,
+              details: {
+                error: error instanceof Error ? error.message : String(error),
+              },
+            };
+          }
+
+          out.push(result);
+        }
+
+        return out;
+      },
+      catch: (cause) =>
+        new CrucibleHttpError({
+          message: "Eval run failed unexpectedly.",
+          status: 500,
+          cause,
+        }),
+    });
+
+    return HttpServerResponse.jsonUnsafe({ results }, { status: 200 });
   }).pipe(
     Effect.catchTag("AuthError", respondToAuthError),
     Effect.catchTag("CrucibleHttpError", handleCrucibleHttpError),

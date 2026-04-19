@@ -15,10 +15,12 @@ import {
   crucibleRunCreateRouteLayer,
   crucibleRunGetRouteLayer,
   crucibleRunListRouteLayer,
+  crucibleRunDeleteRouteLayer,
   crucibleReposListRouteLayer,
   crucibleReposCloneRouteLayer,
   crucibleRepoIssuesRouteLayer,
   crucibleFilesRouteLayer,
+  crucibleEvalRunRouteLayer,
 } from "./crucible/http.ts";
 import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
@@ -275,10 +277,12 @@ export const makeRoutesLayer = Layer.mergeAll(
   crucibleRunCreateRouteLayer,
   crucibleRunGetRouteLayer,
   crucibleRunListRouteLayer,
+  crucibleRunDeleteRouteLayer,
   crucibleReposListRouteLayer,
   crucibleReposCloneRouteLayer,
   crucibleRepoIssuesRouteLayer,
   crucibleFilesRouteLayer,
+  crucibleEvalRunRouteLayer,
   orchestrationDispatchRouteLayer,
   orchestrationSnapshotRouteLayer,
   otlpTracesProxyRouteLayer,
