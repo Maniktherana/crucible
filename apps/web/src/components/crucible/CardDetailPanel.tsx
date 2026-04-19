@@ -7,14 +7,18 @@ import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Sheet, SheetPopup } from "~/components/ui/sheet";
+import { cn } from "~/lib/utils";
 
 import { EventStreamView, type EventFilterMode } from "./EventStreamView";
 import { RunStatusBadge } from "./RunStatusBadge";
 import { RunTreeView } from "./RunTreeView";
+import { SessionChatView } from "./SessionChatView";
 import type { CrucibleRun, KanbanCard } from "./types";
 import { getRepoPath, useCrucibleStore } from "./useCrucibleStore";
 
 const RUN_POLL_INTERVAL_MS = 2000;
+
+type StreamViewMode = "chat" | "raw";
 
 interface CardDetailPanelProps {
   card: KanbanCard;
@@ -92,6 +96,7 @@ export function CardDetailPanel({ card, onClose }: CardDetailPanelProps) {
   }, [card.taskRuns, managerRun?.id, runs]);
 
   const [selectedRunId, setSelectedRunId] = useState<string | null>(managerRun?.id ?? null);
+  const [viewMode, setViewMode] = useState<StreamViewMode>("chat");
   const [filterMode, setFilterMode] = useState<EventFilterMode>("all");
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
@@ -157,6 +162,8 @@ export function CardDetailPanel({ card, onClose }: CardDetailPanelProps) {
     }
   }, [card.issue.body, card.issue.number, card.issue.title, repoForStart, repos]);
 
+  const hasIssueBody = !!card.issue.body?.trim();
+
   return (
     <Sheet
       open
@@ -171,7 +178,7 @@ export function CardDetailPanel({ card, onClose }: CardDetailPanelProps) {
       >
         <div className="flex h-full min-h-0 flex-col overflow-hidden">
           {/* Header */}
-          <div className="flex items-center justify-between border-b px-4 py-3">
+          <div className="flex shrink-0 items-center justify-between border-b px-4 py-3">
             <div className="flex min-w-0 items-center gap-2">
               <span className="text-xs text-muted-foreground">#{card.issue.number}</span>
               <h2 className="truncate text-sm font-semibold">{card.issue.title}</h2>
@@ -205,18 +212,15 @@ export function CardDetailPanel({ card, onClose }: CardDetailPanelProps) {
             </div>
           </div>
 
-          <ScrollArea className="min-h-0 flex-1">
-            {/* Issue body + labels */}
-            <div className="border-b px-4 py-3">
-              <div className="max-w-none text-sm leading-relaxed [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[.85em] [&_h1]:my-2 [&_h1]:text-base [&_h1]:font-semibold [&_h2]:my-2 [&_h2]:text-sm [&_h2]:font-semibold [&_h3]:my-2 [&_h3]:text-sm [&_h3]:font-semibold [&_li]:my-0.5 [&_ol]:my-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1.5 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-muted [&_pre]:p-2 [&_pre]:text-xs [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-5">
-                {card.issue.body ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{card.issue.body}</ReactMarkdown>
-                ) : (
-                  <p className="text-muted-foreground italic">No description</p>
-                )}
-              </div>
+          {/* Issue body + labels — collapsible so the chat view gets most of the space. */}
+          <details
+            className="group shrink-0 border-b bg-muted/10 [&_summary::-webkit-details-marker]:hidden"
+            open={!managerRun}
+          >
+            <summary className="flex cursor-pointer items-center gap-2 px-4 py-2 text-xs text-muted-foreground hover:bg-muted/20">
+              <span className="font-medium uppercase tracking-wider">Issue</span>
               {card.issue.labels.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-1">
+                <div className="flex flex-wrap gap-1">
                   {card.issue.labels.map((l) => (
                     <Badge key={l.name} variant="secondary" size="sm" className="text-[10px]">
                       {l.name}
@@ -224,52 +228,126 @@ export function CardDetailPanel({ card, onClose }: CardDetailPanelProps) {
                   ))}
                 </div>
               )}
-            </div>
-
-            {/* Start button if no run */}
-            {!managerRun && (
-              <div className="border-b px-4 py-3">
-                <Button
-                  onClick={() => void handleStart()}
-                  disabled={starting || !repoForStart}
-                  className="w-full"
-                >
-                  {starting ? "Starting…" : "Start Agent"}
-                </Button>
-                {startError && <p className="mt-2 text-xs text-red-400">{startError}</p>}
-                {!repoForStart && (
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    Select a repository to start an agent.
-                  </p>
+              <span className="ml-auto text-[10px] opacity-60 group-open:hidden">expand</span>
+              <span className="ml-auto text-[10px] opacity-60 hidden group-open:inline">
+                collapse
+              </span>
+            </summary>
+            <div className="max-h-64 overflow-auto px-4 pb-3">
+              <div className="max-w-none text-sm leading-relaxed [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[.85em] [&_h1]:my-2 [&_h1]:text-base [&_h1]:font-semibold [&_h2]:my-2 [&_h2]:text-sm [&_h2]:font-semibold [&_h3]:my-2 [&_h3]:text-sm [&_h3]:font-semibold [&_li]:my-0.5 [&_ol]:my-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1.5 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-muted [&_pre]:p-2 [&_pre]:text-xs [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-5">
+                {hasIssueBody ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{card.issue.body}</ReactMarkdown>
+                ) : (
+                  <p className="text-muted-foreground italic">No description</p>
                 )}
               </div>
-            )}
+            </div>
+          </details>
 
-            {/* Run tree */}
-            {managerRun && (
-              <div className="border-b px-4 py-3">
-                <RunTreeView
-                  managerRun={managerRun}
-                  taskRuns={taskRuns}
-                  selectedRunId={selectedRunId}
-                  onSelectRun={setSelectedRunId}
-                />
-              </div>
-            )}
+          {/* Start button if no run */}
+          {!managerRun && (
+            <div className="shrink-0 border-b px-4 py-3">
+              <Button
+                onClick={() => void handleStart()}
+                disabled={starting || !repoForStart}
+                className="w-full"
+              >
+                {starting ? "Starting…" : "Start Agent"}
+              </Button>
+              {startError && <p className="mt-2 text-xs text-red-400">{startError}</p>}
+              {!repoForStart && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Select a repository to start an agent.
+                </p>
+              )}
+            </div>
+          )}
 
-            {/* Event stream for selected run */}
-            {selectedRun && (
-              <div className="px-4 py-3">
-                <EventStreamView
-                  run={selectedRun}
-                  filterMode={filterMode}
-                  onFilterChange={setFilterMode}
+          {/* Run tree */}
+          {managerRun && (
+            <div className="shrink-0 border-b px-4 py-3">
+              <RunTreeView
+                managerRun={managerRun}
+                taskRuns={taskRuns}
+                selectedRunId={selectedRunId}
+                onSelectRun={setSelectedRunId}
+              />
+            </div>
+          )}
+
+          {/* Tabs + main view — the chat view owns its own scrolling so it can
+              auto-pin new messages to the bottom without fighting with the
+              surrounding layout. */}
+          {selectedRun && (
+            <>
+              <div className="flex shrink-0 items-center gap-1 border-b bg-muted/10 px-4 py-2">
+                <TabButton
+                  active={viewMode === "chat"}
+                  onClick={() => setViewMode("chat")}
+                  label="Chat"
                 />
+                <TabButton
+                  active={viewMode === "raw"}
+                  onClick={() => setViewMode("raw")}
+                  label="Raw"
+                  hint="Debug timeline"
+                />
+                <span className="ml-auto text-[10px] text-muted-foreground">
+                  {selectedRun.events.length} events
+                </span>
               </div>
-            )}
-          </ScrollArea>
+
+              <div className="min-h-0 flex-1">
+                {viewMode === "chat" ? (
+                  <SessionChatView
+                    run={selectedRun}
+                    taskRuns={taskRuns}
+                    onSelectRun={setSelectedRunId}
+                  />
+                ) : (
+                  <ScrollArea className="h-full">
+                    <div className="px-4 py-3">
+                      <EventStreamView
+                        run={selectedRun}
+                        filterMode={filterMode}
+                        onFilterChange={setFilterMode}
+                      />
+                    </div>
+                  </ScrollArea>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </SheetPopup>
     </Sheet>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  label,
+  hint,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  hint?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+        active
+          ? "bg-primary text-primary-foreground"
+          : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+      )}
+      title={hint}
+    >
+      {label}
+    </button>
   );
 }

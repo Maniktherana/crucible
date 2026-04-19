@@ -6,11 +6,9 @@ import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
 
 import { AgentBrowserPreview, detectAgentBrowserScreenshot } from "./AgentBrowserPreview";
-import { SessionChatView } from "./SessionChatView";
 import type { CrucibleRun, CrucibleRunEvent } from "./types";
 
 export type EventFilterMode = "all" | "tools" | "text" | "errors";
-export type EventViewMode = "timeline" | "chat";
 
 interface EventStreamViewProps {
   run: CrucibleRun;
@@ -172,9 +170,13 @@ const FILTERS: { id: EventFilterMode; label: string }[] = [
   { id: "errors", label: "Errors" },
 ];
 
+/**
+ * Raw / debug view of the run. Displays every event as a timeline card with
+ * expandable payloads. Filtering by category (All/Tools/Text/Errors) is
+ * preserved from the original L3 observability surface — the chat-first view
+ * is rendered separately by `SessionChatView`.
+ */
 export function EventStreamView({ run, filterMode, onFilterChange }: EventStreamViewProps) {
-  const [viewMode, setViewMode] = useState<EventViewMode>("timeline");
-
   const filteredEvents = run.events.filter((event) => {
     if (filterMode === "all") return true;
     const category = categorizeEvent(event);
@@ -196,7 +198,7 @@ export function EventStreamView({ run, filterMode, onFilterChange }: EventStream
         </div>
       )}
 
-      {/* Filter + view mode bar */}
+      {/* Filter bar */}
       <div className="flex flex-wrap items-center gap-1">
         <span className="mr-1 text-xs text-muted-foreground">Filter:</span>
         {FILTERS.map((f) => (
@@ -210,26 +212,6 @@ export function EventStreamView({ run, filterMode, onFilterChange }: EventStream
             {f.label}
           </Button>
         ))}
-
-        <span className="ml-2 h-4 w-px bg-border" />
-
-        <Button
-          size="xs"
-          variant={viewMode === "timeline" ? "default" : "ghost"}
-          className="text-xs"
-          onClick={() => setViewMode("timeline")}
-        >
-          Timeline
-        </Button>
-        <Button
-          size="xs"
-          variant={viewMode === "chat" ? "default" : "ghost"}
-          className="text-xs"
-          onClick={() => setViewMode("chat")}
-        >
-          Chat
-        </Button>
-
         <span className="ml-auto text-xs text-muted-foreground">
           {filteredEvents.length} / {run.events.length} events
         </span>
@@ -242,9 +224,7 @@ export function EventStreamView({ run, filterMode, onFilterChange }: EventStream
         </div>
       )}
 
-      {viewMode === "chat" ? (
-        <SessionChatView events={filteredEvents} />
-      ) : filteredEvents.length === 0 ? (
+      {filteredEvents.length === 0 ? (
         <div className="rounded-lg border border-dashed p-6 text-center text-xs text-muted-foreground">
           No events yet.
         </div>
