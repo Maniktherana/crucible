@@ -61,6 +61,14 @@ export interface ManagerPromptParams {
   readonly runId: string;
   /** Whether children should be told they can reach the agent-browser CLI. */
   readonly agentBrowserAvailable: boolean;
+  /**
+   * Commands the operator has previously approved for this repo (via the
+   * approval flow documented in the prompt). Rendered as extra lines in the
+   * read-only allow-list so the manager can run them without re-requesting.
+   *
+   * Loaded by `http.ts` from `${repoPath}/.crucible/allowlist.json`.
+   */
+  readonly additionalAllowedCommands?: readonly string[];
 }
 
 export interface TaskPromptParams {
@@ -473,7 +481,13 @@ export function buildManagerPrompt(params: ManagerPromptParams): string {
     : "";
   const readiness = buildReadinessInstructions(params.repoPath);
   const forbidden = FORBIDDEN_TOOL_LIST;
-  const allowed = ALLOWED_READONLY_BASH_LIST;
+  const extra = params.additionalAllowedCommands ?? [];
+  const allowed =
+    extra.length > 0
+      ? `${ALLOWED_READONLY_BASH_LIST}\n\nPlus these operator-approved commands for this repo (added via the approval flow, persisted in \`${params.repoPath}/.crucible/allowlist.json\`):\n${extra
+          .map((cmd) => `- \`${cmd}\``)
+          .join("\n")}`
+      : ALLOWED_READONLY_BASH_LIST;
 
   return `${NARRATION_PREAMBLE}# ==========================================================
 # MANAGER AGENT - ABSOLUTE RULE
@@ -530,6 +544,33 @@ Before invoking any tool, answer these two questions to yourself:
 2. **"Would a subtask agent do this better?"** — if the action involves actually building, compiling, editing, or testing anything, the answer is yes. Spawn a subtask instead.
 
 These two questions are cheap. The cost of skipping them (running a stray build/install/edit command) is that the run fails. Always ask.
+
+## REQUESTING APPROVAL FOR A NEW COMMAND
+
+Sometimes you will genuinely need a read-only command that isn't on the allow-list — an unusual \`gh\` subcommand, a \`jq\` pipeline, a \`kubectl get\`, etc. You have two options:
+
+**Option A (preferred):** spawn a subtask to run the command. Subtasks can run anything.
+
+**Option B:** request operator approval. Use this ONLY when the command must be run from the manager context (e.g., to inform decomposition) AND it is strictly read-only AND a subtask cannot do it for you. Flow:
+
+1. Emit a literal marker line on stdout (same marker format as \`SCREENSHOT_SAVED:\` and \`FINAL_PR_URL:\` — one line, literal prefix, machine-parseable):
+
+   \`\`\`
+   REQUEST_APPROVAL: <exact command to run> | <one-line reason why you need it>
+   \`\`\`
+
+   Example:
+   \`\`\`
+   REQUEST_APPROVAL: gh api graphql -f query='...' | jq .data | summarize repo issues
+   \`\`\`
+
+2. **STOP calling tools** after emitting the marker. Poll \`subtask-status --run-id ${params.runId}\` every 30 seconds. The orchestrator pauses your run, shows the operator an Approve/Deny UI, and on approval injects an \`APPROVED: <command>\` event into your event stream. A denial injects \`DENIED: <command>\`.
+
+3. Once you see \`APPROVED: <command>\` appear in the event stream (look for it in your next text input), the command has also been appended to this repo's allow-list at \`${params.repoPath}/.crucible/allowlist.json\` — so future manager runs won't need to re-request it. You may now run the command.
+
+4. If you see \`DENIED: <command>\`, do not run it. Work around the constraint (spawn a subtask instead, or proceed without the information).
+
+Do NOT run commands not on the allow-list (or the extended operator-approved list above) without going through this flow. The orchestrator treats unsanctioned mutating commands as a failure.
 
 ### Forbidden tools (explicit)
 
@@ -647,21 +688,108 @@ For each subtask, invoke \`spawn-subtask\` with the detailed prompt. spawn-subta
 
 After spawning, poll \`subtask-status\` every 15-30 seconds. Continue polling until exit code is 0 (all done) or 1 (at least one errored).
 
+## STEP 4.5: CI TRIAGE (MANDATORY for every completed child that opened a PR)
+
+Every subtask PR triggers CI (GitHub Actions, Vercel Preview, etc.). A PR is NOT actually done until its CI is green. You must inspect each completed child's PR and, when CI fails, spawn a **fix subtask** to repair it. Do not skip this step.
+
+### 4.5.1 - For each completed child, pull its PR URL
+
+Use \`subtask-status\` output to find each completed child's \`prUrl\`. For each one, extract the PR number:
+
+\`\`\`bash
+# Example: parse from a URL like https://github.com/${params.repo}/pull/42
+PR_URL="<child-prUrl>"
+PR_NUMBER="\${PR_URL##*/}"
+\`\`\`
+
+### 4.5.2 - Check CI status (read-only; these are ALLOWED bash commands)
+
+\`\`\`bash
+# Top-level check summary - one line per check with PASS/FAIL/PENDING
+gh pr checks "$PR_NUMBER" --repo ${params.repo}
+
+# Structured JSON summary (easier to parse)
+gh pr checks "$PR_NUMBER" --repo ${params.repo} --json name,state,conclusion,link,workflow 2>/dev/null
+
+# Overall PR review state (includes mergeability + statusCheckRollup)
+gh pr view "$PR_NUMBER" --repo ${params.repo} --json state,mergeable,statusCheckRollup,reviews
+\`\`\`
+
+If CI has not started yet (checks list is empty or all \`PENDING\`), wait 30s and re-poll. Retry up to **3 times**. If still pending after that, note "CI still pending" in your summary and move on - do not block forever.
+
+### 4.5.3 - If any check is FAILING or ERRORED, analyze the failure
+
+\`\`\`bash
+# List failing check runs
+gh pr checks "$PR_NUMBER" --repo ${params.repo} --json name,state,conclusion,link 2>/dev/null \\
+  | jq -r '.[] | select(.conclusion=="FAILURE" or .conclusion=="CANCELLED" or .conclusion=="TIMED_OUT") | "\\(.name)\\t\\(.link)"'
+
+# For GitHub Actions: pull the failing job's log tail
+# Get the run id from the check link (the last path segment) and:
+gh run view <run-id> --repo ${params.repo} --log-failed 2>&1 | tail -200
+
+# For Vercel / third-party checks: read the linked deployment page URL,
+# then use the Vercel CLI if authenticated:
+vercel inspect <deployment-url> --logs 2>&1 | tail -200 || true
+
+# Always capture the PR commit status description as a last-resort signal:
+gh pr view "$PR_NUMBER" --repo ${params.repo} --json statusCheckRollup \\
+  | jq -r '.statusCheckRollup[] | select(.conclusion!="SUCCESS") | "\\(.name): \\(.conclusion) - \\(.detailsUrl)"'
+\`\`\`
+
+From the logs, classify the failure category:
+
+- **build failure** (TypeScript error, bundler error, missing dep) - usually a code bug.
+- **lint / format failure** - quick fix.
+- **test failure** - either a genuine regression the task introduced or a flake; read the test name + error.
+- **deploy failure** (Vercel/Netlify) - often env/config, sometimes a runtime error in the build output.
+- **infra failure** (timeout, cancelled, runner down) - retry, not fix. You can skip spawning a fix and instead re-run the workflow via \`gh run rerun <run-id> --failed\` (this IS allowed - it mutates CI state, not repo state; and it's the only mutation exception for this triage step).
+
+### 4.5.4 - Spawn a FIX subtask if there is a real failure
+
+For anything in categories build / lint / test / deploy (not infra), spawn a new subtask with a precise prompt. Include:
+
+- The PR URL and branch name of the PR being fixed.
+- The check name(s) that failed.
+- The exact error lines from the log (copy them into the prompt).
+- A clear directive: "check out the existing branch \`<branchName>\`, fix the failure, push the fix to the SAME branch (do NOT create a new branch and do NOT open a new PR), then re-run Step 10 of the task prompt to emit \`FINAL_PR_URL:\` pointing at the EXISTING PR."
+
+Example spawn invocation:
+
+\`\`\`bash
+${params.spawnCommand} --parent-run-id ${params.runId} --repo ${params.repo} "Fix the CI failure on PR #\${PR_NUMBER} (branch: \${BRANCH_NAME}). The check '<check-name>' failed with:
+
+<paste the error lines here>
+
+Do NOT create a new branch - check out the existing branch \`\${BRANCH_NAME}\` inside the worktree (\`git fetch origin && git checkout \${BRANCH_NAME}\`), make the fix, commit, push to the same branch, and emit FINAL_PR_URL pointing at the existing PR (\${PR_URL}). Do NOT open a new PR."
+\`\`\`
+
+### 4.5.5 - Re-poll after the fix subtask completes
+
+Once a fix subtask reports completion, return to Step 4.5.2 and re-check CI for that PR. Allow up to **2 fix cycles per PR** (initial + 1 retry). If CI is still red after 2 cycles, stop retrying, capture the final error in your summary under a new \`CI_FAILURES:\` section, and move on - you will report the issue in Step 5 rather than loop forever.
+
+### 4.5.6 - When all PRs are green (or you've exhausted retries), proceed to Step 5
+
 ## STEP 5: SUMMARIZE AND STOP
 
 Produce a final summary in this exact shape:
 
 \`\`\`
-SUBTASKS_SPAWNED: <count>
+SUBTASKS_SPAWNED: <count including fix subtasks>
 SUBTASKS_COMPLETED: <count>
 SUBTASKS_FAILED: <count>
 PR_URLS:
-- <url1>
-- <url2>
+- <url1> [CI: green | red | pending]
+- <url2> [CI: ...]
 ...
+CI_FAILURES:
+- <pr-url> — <check-name>: <one-line error summary> (fix attempts: N/2)
+- ...
 \`\`\`
 
-Each spawned subtask should have opened exactly one PR. If \`SUBTASKS_COMPLETED > 0\` and you have zero \`PR_URLS\` to list, something went wrong in the task agents - call \`subtask-status\` one more time to confirm, and include any task \`prUrl\` values you find.
+The \`[CI: ...]\` annotation on each PR URL reports the final CI state after all Step 4.5 triage attempts. Include \`CI_FAILURES:\` only if one or more PRs exhausted retries while still red; omit the heading entirely when all PRs are green.
+
+Each spawned subtask should have opened exactly one PR (fix subtasks push to an existing PR and do not open new ones). If \`SUBTASKS_COMPLETED > 0\` and you have zero \`PR_URLS\` to list, something went wrong in the task agents - call \`subtask-status\` one more time to confirm, and include any task \`prUrl\` values you find.
 
 ## PRE-STOP AUDIT (run this before your final message)
 
@@ -1025,14 +1153,17 @@ const ALLOWED_READONLY_BASH_LIST = [
   "- `ls`, `ls -la`, `ls -R`",
   "- `cat`, `head`, `tail`, `wc`, `file`, `stat`",
   "- `find … -type f …` (without any `-delete` or `-exec … {}` that mutates)",
-  "- `grep`, `rg`, `egrep`, `fgrep`",
+  "- `grep`, `rg`, `egrep`, `fgrep`, `jq`",
   "- `git log`, `git diff`, `git show`, `git status`, `git remote -v`, `git branch --list`, `git ls-files`, `git blame`",
   "- `pwd`, `echo` (for printing to stdout only, never redirected to a file)",
   "- `test -f <path>` (existence checks only)",
+  "- `gh pr view`, `gh pr checks`, `gh pr list`, `gh run view`, `gh run list` (read-only CI/PR inspection - REQUIRED for Step 4.5 CI triage)",
+  "- `vercel inspect <url> --logs`, `vercel logs <url>` (read-only deployment inspection - REQUIRED for Step 4.5 CI triage)",
   "",
-  "Plus these two Crucible CLIs (which DO have side-effects, but are the only mutating commands you are permitted to run):",
+  "Plus these Crucible CLIs and the ONE CI-state exception (which DO have side-effects, but are the only mutating commands you are permitted to run):",
   "- `spawn-subtask` (documented below under YOUR TOOLS)",
   "- `subtask-status` (documented below under YOUR TOOLS)",
+  "- `gh run rerun <run-id> --failed` (ONLY for infra/flake retries in Step 4.5; does NOT touch repo state)",
 ].join("\n");
 
 function formatAgentBrowserManagerNote(): string {

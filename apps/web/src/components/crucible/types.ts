@@ -34,6 +34,20 @@ export interface CrucibleAttachment {
   createdAt: string;
 }
 
+export type CrucibleApprovalStatus = "pending" | "approved" | "denied";
+
+export interface CrucibleApproval {
+  id: string;
+  runId: string;
+  repo: string;
+  command: string;
+  reason: string;
+  status: CrucibleApprovalStatus;
+  addedToAllowlist: boolean;
+  createdAt: string;
+  resolvedAt?: string;
+}
+
 export interface CrucibleRun {
   id: string;
   type: CrucibleRunType;
@@ -55,6 +69,8 @@ export interface CrucibleRun {
   completedAt?: string;
   durationMs?: number;
   attachments?: CrucibleAttachment[];
+  /** Pending + resolved operator command-approval requests for this run. */
+  approvals?: CrucibleApproval[];
   /** Run is waiting on external input (e.g. permission prompt from the agent). */
   needsInput?: boolean;
 }

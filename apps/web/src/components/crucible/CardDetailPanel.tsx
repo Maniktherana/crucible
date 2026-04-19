@@ -1,4 +1,11 @@
-import { CheckIcon, CopyIcon, ExternalLinkIcon, ServerIcon, XIcon } from "lucide-react";
+import {
+  CheckIcon,
+  CopyIcon,
+  ExternalLinkIcon,
+  ServerIcon,
+  ShieldAlertIcon,
+  XIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -14,7 +21,13 @@ import { EventStreamView, type EventFilterMode } from "./EventStreamView";
 import { RunStatusBadge } from "./RunStatusBadge";
 import { RunTreeView } from "./RunTreeView";
 import { SessionChatView } from "./SessionChatView";
-import type { CrucibleRun, CrucibleRunEvent, GhStatus, KanbanCard } from "./types";
+import type {
+  CrucibleApproval,
+  CrucibleRun,
+  CrucibleRunEvent,
+  GhStatus,
+  KanbanCard,
+} from "./types";
 import { getIssueColor, getRepoPath, useCrucibleStore } from "./useCrucibleStore";
 
 const RUN_POLL_INTERVAL_MS = 2000;
@@ -263,6 +276,122 @@ function WorktreeChip({ directory }: { directory: string }) {
 // GH CI indicator
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Approval banner (pending command-approval requests from the manager agent)
+// ---------------------------------------------------------------------------
+
+async function postApprovalResolution(params: {
+  runId: string;
+  approvalId: string;
+  approved: boolean;
+  addToAllowlist: boolean;
+}): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `/api/crucible/runs/${encodeURIComponent(params.runId)}/approvals/${encodeURIComponent(params.approvalId)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          approved: params.approved,
+          addToAllowlist: params.addToAllowlist,
+        }),
+      },
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+function ApprovalBanner({ runs }: { runs: CrucibleRun[] }) {
+  const [addToAllowlist, setAddToAllowlist] = useState(true);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const pending = useMemo<{ run: CrucibleRun; approval: CrucibleApproval }[]>(() => {
+    const out: { run: CrucibleRun; approval: CrucibleApproval }[] = [];
+    for (const run of runs) {
+      for (const a of run.approvals ?? []) {
+        if (a.status === "pending") out.push({ run, approval: a });
+      }
+    }
+    return out;
+  }, [runs]);
+
+  if (pending.length === 0) return null;
+
+  const handleResolve = async (runId: string, approvalId: string, approved: boolean) => {
+    setBusyId(approvalId);
+    await postApprovalResolution({
+      runId,
+      approvalId,
+      approved,
+      addToAllowlist: approved && addToAllowlist,
+    });
+    // Poll will pick up the status change within 2s; no local state flip needed.
+    setBusyId(null);
+  };
+
+  return (
+    <div className="shrink-0 border-b border-orange-500/40 bg-orange-500/10 px-4 py-3">
+      <div className="flex items-center gap-2 pb-2">
+        <ShieldAlertIcon className="h-4 w-4 text-orange-400" />
+        <span className="text-xs font-semibold uppercase tracking-wider text-orange-400">
+          Approval required ({pending.length})
+        </span>
+        <label className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={addToAllowlist}
+            onChange={(e) => setAddToAllowlist(e.target.checked)}
+            className="h-3 w-3 accent-orange-500"
+          />
+          Add to repo allowlist on approve
+        </label>
+      </div>
+      <ul className="flex flex-col gap-2">
+        {pending.map(({ run, approval }) => (
+          <li
+            key={approval.id}
+            className="rounded border border-orange-500/30 bg-background/60 p-2"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <code className="block max-w-full truncate rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">
+                  {approval.command}
+                </code>
+                {approval.reason && (
+                  <p className="mt-1 text-[11px] text-muted-foreground">{approval.reason}</p>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <Button
+                  size="xs"
+                  variant="default"
+                  disabled={busyId === approval.id}
+                  onClick={() => void handleResolve(run.id, approval.id, true)}
+                  className="text-xs"
+                >
+                  Approve
+                </Button>
+                <Button
+                  size="xs"
+                  variant="destructive-outline"
+                  disabled={busyId === approval.id}
+                  onClick={() => void handleResolve(run.id, approval.id, false)}
+                  className="text-xs"
+                >
+                  Deny
+                </Button>
+              </div>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function GhStatusBadge({ status }: { status: GhStatus }) {
   if (status.status === "no_pr") return null;
   const common = "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px]";
@@ -481,6 +610,9 @@ export function CardDetailPanel({ card, onClose }: CardDetailPanelProps) {
               </div>
             )}
           </div>
+
+          {/* Operator approval prompts from the manager agent */}
+          <ApprovalBanner runs={allRuns} />
 
           {/* Issue body + labels — collapsible so the chat view gets most of the space. */}
           <details

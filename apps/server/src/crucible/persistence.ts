@@ -26,6 +26,22 @@ export interface CrucibleAttachment {
   createdAt: string;
 }
 
+export type ApprovalStatus = "pending" | "approved" | "denied";
+
+export interface CrucibleApproval {
+  id: string;
+  runId: string;
+  /** Repo identifier (`owner/name`) the approval applies to. */
+  repo: string;
+  command: string;
+  reason: string;
+  status: ApprovalStatus;
+  createdAt: string;
+  resolvedAt?: string;
+  /** If true at approval time, the command was also appended to the repo allowlist file. */
+  addedToAllowlist: boolean;
+}
+
 export interface PersistedCrucibleRun {
   id: string;
   type: string;
@@ -69,6 +85,12 @@ interface Statements {
   insertAttachment: Database.Statement;
   selectAttachmentsByRun: Database.Statement;
   deleteAttachmentsByRun: Database.Statement;
+  insertApproval: Database.Statement;
+  selectApprovalById: Database.Statement;
+  selectApprovalsByRun: Database.Statement;
+  selectPendingApprovalsByRun: Database.Statement;
+  updateApprovalStatus: Database.Statement;
+  deleteApprovalsByRun: Database.Statement;
 }
 
 let stmts: Statements | null = null;
@@ -114,6 +136,22 @@ CREATE TABLE IF NOT EXISTS crucible_attachments (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_attachments_run_path ON crucible_attachments(run_id, path);
 CREATE INDEX IF NOT EXISTS idx_attachments_run ON crucible_attachments(run_id);
+
+CREATE TABLE IF NOT EXISTS crucible_approvals (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  repo TEXT NOT NULL DEFAULT '',
+  command TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  added_to_allowlist INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT,
+  FOREIGN KEY (run_id) REFERENCES crucible_runs(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_run_command ON crucible_approvals(run_id, command);
+CREATE INDEX IF NOT EXISTS idx_approvals_run ON crucible_approvals(run_id);
+CREATE INDEX IF NOT EXISTS idx_approvals_status ON crucible_approvals(status);
 `;
 
 export function initCrucibleDb(dbPath: string): void {
@@ -177,6 +215,49 @@ export function initCrucibleDb(dbPath: string): void {
     `),
 
     deleteAttachmentsByRun: db.prepare("DELETE FROM crucible_attachments WHERE run_id = @runId"),
+
+    insertApproval: db.prepare(`
+      INSERT OR IGNORE INTO crucible_approvals (
+        id, run_id, repo, command, reason, status, added_to_allowlist,
+        created_at, resolved_at
+      ) VALUES (
+        @id, @runId, @repo, @command, @reason, @status, @addedToAllowlist,
+        @createdAt, @resolvedAt
+      )
+    `),
+
+    selectApprovalById: db.prepare(`
+      SELECT id, run_id, repo, command, reason, status, added_to_allowlist,
+             created_at, resolved_at
+      FROM crucible_approvals
+      WHERE id = @id
+    `),
+
+    selectApprovalsByRun: db.prepare(`
+      SELECT id, run_id, repo, command, reason, status, added_to_allowlist,
+             created_at, resolved_at
+      FROM crucible_approvals
+      WHERE run_id = @runId
+      ORDER BY created_at ASC
+    `),
+
+    selectPendingApprovalsByRun: db.prepare(`
+      SELECT id, run_id, repo, command, reason, status, added_to_allowlist,
+             created_at, resolved_at
+      FROM crucible_approvals
+      WHERE run_id = @runId AND status = 'pending'
+      ORDER BY created_at ASC
+    `),
+
+    updateApprovalStatus: db.prepare(`
+      UPDATE crucible_approvals
+      SET status = @status,
+          added_to_allowlist = @addedToAllowlist,
+          resolved_at = @resolvedAt
+      WHERE id = @id
+    `),
+
+    deleteApprovalsByRun: db.prepare("DELETE FROM crucible_approvals WHERE run_id = @runId"),
   };
 }
 
@@ -371,4 +452,78 @@ export function getAttachmentsForRun(runId: string): CrucibleAttachment[] {
     label: r.label,
     createdAt: r.created_at,
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Approvals
+// ---------------------------------------------------------------------------
+
+interface ApprovalRow {
+  id: string;
+  run_id: string;
+  repo: string;
+  command: string;
+  reason: string;
+  status: ApprovalStatus;
+  added_to_allowlist: number;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+function rowToApproval(r: ApprovalRow): CrucibleApproval {
+  const approval: CrucibleApproval = {
+    id: r.id,
+    runId: r.run_id,
+    repo: r.repo,
+    command: r.command,
+    reason: r.reason,
+    status: r.status,
+    createdAt: r.created_at,
+    addedToAllowlist: r.added_to_allowlist === 1,
+  };
+  if (r.resolved_at) approval.resolvedAt = r.resolved_at;
+  return approval;
+}
+
+export function persistApproval(a: CrucibleApproval): void {
+  stmts?.insertApproval.run({
+    id: a.id,
+    runId: a.runId,
+    repo: a.repo,
+    command: a.command,
+    reason: a.reason,
+    status: a.status,
+    addedToAllowlist: a.addedToAllowlist ? 1 : 0,
+    createdAt: a.createdAt,
+    resolvedAt: a.resolvedAt ?? null,
+  });
+}
+
+export function getApprovalById(id: string): CrucibleApproval | null {
+  const row = stmts?.selectApprovalById.get({ id }) as ApprovalRow | undefined;
+  return row ? rowToApproval(row) : null;
+}
+
+export function getApprovalsForRun(runId: string): CrucibleApproval[] {
+  const rows = (stmts?.selectApprovalsByRun.all({ runId }) ?? []) as ApprovalRow[];
+  return rows.map(rowToApproval);
+}
+
+export function getPendingApprovalsForRun(runId: string): CrucibleApproval[] {
+  const rows = (stmts?.selectPendingApprovalsByRun.all({ runId }) ?? []) as ApprovalRow[];
+  return rows.map(rowToApproval);
+}
+
+export function resolveApproval(params: {
+  id: string;
+  status: "approved" | "denied";
+  addedToAllowlist: boolean;
+  resolvedAt: string;
+}): void {
+  stmts?.updateApprovalStatus.run({
+    id: params.id,
+    status: params.status,
+    addedToAllowlist: params.addedToAllowlist ? 1 : 0,
+    resolvedAt: params.resolvedAt,
+  });
 }

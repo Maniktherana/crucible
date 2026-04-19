@@ -46,6 +46,11 @@ import {
   persistAttachment,
   getAttachmentsForRun,
   type CrucibleAttachment,
+  persistApproval,
+  getApprovalById,
+  getApprovalsForRun,
+  resolveApproval,
+  type CrucibleApproval,
 } from "./persistence.ts";
 
 // Module-scope init — async but fire-and-forget (tracing is best-effort).
@@ -276,10 +281,16 @@ function pushRunEvent(run: CrucibleRunRecord, event: Omit<CrucibleRunEvent, "id"
   run.updatedAt = nowIso();
 
   // Ingest any SCREENSHOT_SAVED markers from event payload + summary
+  const markerText = `${eventObj.summary}\n${JSON.stringify(eventObj.payload ?? "")}`;
   ingestScreenshotMarkers({
     runId: run.id,
     runDirectory: run.directory,
-    text: `${eventObj.summary}\n${JSON.stringify(eventObj.payload ?? "")}`,
+    text: markerText,
+  });
+  // Ingest any REQUEST_APPROVAL markers and flip the run into needsInput.
+  ingestApprovalRequests({
+    run,
+    text: markerText,
   });
 
   // Best-effort NDJSON log to disk
@@ -563,6 +574,7 @@ async function serializeRun(run: CrucibleRunRecord) {
     completedAt: run.completedAt ?? null,
     durationMs: run.durationMs ?? null,
     attachments: getAttachmentsForRun(run.id),
+    approvals: getApprovalsForRun(run.id),
   };
 }
 
@@ -814,6 +826,9 @@ async function startRun(
     input.issueTitle &&
     input.issueBody
   ) {
+    // Fold in previously operator-approved commands for this repo so the
+    // manager doesn't re-request them. Best-effort; file absence is fine.
+    const additionalAllowedCommands = await readRepoAllowlist(directory);
     dispatchPrompt = buildManagerPrompt({
       issueNumber,
       issueTitle: input.issueTitle.trim(),
@@ -824,6 +839,7 @@ async function startRun(
       statusCommand: statusCmd,
       runId: run.id,
       agentBrowserAvailable,
+      ...(additionalAllowedCommands.length > 0 ? { additionalAllowedCommands } : {}),
     });
   } else if (
     runType === "task" &&
@@ -1139,6 +1155,84 @@ function ingestScreenshotMarkers(params: {
       createdAt: now,
     } satisfies CrucibleAttachment);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Approval marker ingestion + allowlist file helpers
+// ---------------------------------------------------------------------------
+
+const APPROVAL_MARKER_RE = /^REQUEST_APPROVAL:\s+([^|\n]+?)(?:\s*\|\s*(.*))?$/gm;
+
+function approvalIdFor(runId: string, command: string): string {
+  return createHash("sha1").update(`${runId}:${command}`).digest("hex").slice(0, 16);
+}
+
+/**
+ * Scan an event text blob for REQUEST_APPROVAL marker lines and persist a
+ * pending approval row per unique (runId, command). Also flips the run into
+ * `needsInput: true` so the chat UI surfaces the request. Idempotent.
+ *
+ * Marker shape: `REQUEST_APPROVAL: <command> | <reason>` (reason optional).
+ */
+function ingestApprovalRequests(params: { run: CrucibleRunRecord; text: string }): void {
+  if (!params.text || params.text.indexOf("REQUEST_APPROVAL:") === -1) return;
+  const now = new Date().toISOString();
+  const re = new RegExp(APPROVAL_MARKER_RE.source, "gm");
+  const seen = new Set<string>();
+  let match: RegExpExecArray | null;
+  let any = false;
+  while ((match = re.exec(params.text)) !== null) {
+    const command = (match[1] ?? "").trim();
+    const reason = (match[2] ?? "").trim();
+    if (!command) continue;
+    if (seen.has(command)) continue;
+    seen.add(command);
+    persistApproval({
+      id: approvalIdFor(params.run.id, command),
+      runId: params.run.id,
+      repo: params.run.repo,
+      command,
+      reason,
+      status: "pending",
+      createdAt: now,
+      addedToAllowlist: false,
+    });
+    any = true;
+  }
+  if (any) {
+    params.run.needsInput = true;
+  }
+}
+
+async function readRepoAllowlist(repoPath: string): Promise<string[]> {
+  const p = Path.join(repoPath, ".crucible", "allowlist.json");
+  try {
+    const raw = await FS.readFile(p, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+    }
+    // { commands: [...] } fallback
+    if (parsed && typeof parsed === "object") {
+      const cmds = (parsed as { commands?: unknown }).commands;
+      if (Array.isArray(cmds)) {
+        return cmds.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+      }
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+async function appendRepoAllowlist(repoPath: string, command: string): Promise<void> {
+  const dir = Path.join(repoPath, ".crucible");
+  const file = Path.join(dir, "allowlist.json");
+  await FS.mkdir(dir, { recursive: true });
+  const existing = await readRepoAllowlist(repoPath);
+  if (existing.includes(command)) return;
+  existing.push(command);
+  await FS.writeFile(file, `${JSON.stringify(existing, null, 2)}\n`, "utf8");
 }
 
 // ---------------------------------------------------------------------------
@@ -1502,6 +1596,125 @@ export const crucibleRunGetRouteLayer = HttpRouter.add(
     });
 
     return HttpServerResponse.jsonUnsafe(response, { status: 200 });
+  }).pipe(
+    Effect.catchTag("AuthError", respondToAuthError),
+    Effect.catchTag("CrucibleHttpError", handleCrucibleHttpError),
+  ),
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/crucible/runs/:runId/approvals/:approvalId — approve/deny
+// ---------------------------------------------------------------------------
+//
+// Body: { "approved": boolean, "addToAllowlist"?: boolean }
+//
+// On approve:
+//   - approval row status -> "approved"
+//   - if addToAllowlist (default true), command appended to
+//     <repoPath>/.crucible/allowlist.json
+//   - synthetic event pushed to the run so the manager agent sees
+//     `APPROVED: <command>` in its next poll
+// On deny:
+//   - approval row status -> "denied"
+//   - synthetic `DENIED: <command>` event pushed
+// Run.needsInput flips back to false once no pending approvals remain.
+
+export const crucibleRunApprovalResolveRouteLayer = HttpRouter.add(
+  "POST",
+  "/api/crucible/runs/:runId/approvals/:approvalId",
+  Effect.gen(function* () {
+    yield* requireCrucibleAccess;
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const url = HttpServerRequest.toURL(request);
+    if (Option.isNone(url)) {
+      return yield* new CrucibleHttpError({ message: "Invalid request URL.", status: 400 });
+    }
+
+    // Path: /api/crucible/runs/:runId/approvals/:approvalId
+    const segments = url.value.pathname.split("/").filter(Boolean);
+    const runId = decodeURIComponent(segments.at(-3) ?? "");
+    const approvalId = decodeURIComponent(segments.at(-1) ?? "");
+    if (!runId || !approvalId) {
+      return yield* new CrucibleHttpError({
+        message: "Run id and approval id are required.",
+        status: 400,
+      });
+    }
+
+    const body = yield* Effect.mapError(request.json, () => new CrucibleHttpError({ message: "Invalid JSON body.", status: 400 }));
+    const bodyRec = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+    const approved = bodyRec.approved === true;
+    const addToAllowlistRaw = bodyRec.addToAllowlist;
+    const addToAllowlist = approved && addToAllowlistRaw !== false; // default true on approve
+
+    const approval = getApprovalById(approvalId);
+    if (!approval) {
+      return yield* new CrucibleHttpError({ message: "Approval not found.", status: 404 });
+    }
+    if (approval.runId !== runId) {
+      return yield* new CrucibleHttpError({
+        message: "Approval does not belong to this run.",
+        status: 400,
+      });
+    }
+    if (approval.status !== "pending") {
+      return HttpServerResponse.jsonUnsafe(
+        { ok: true, approval, alreadyResolved: true },
+        { status: 200 },
+      );
+    }
+
+    const run = crucibleStore.runs.get(runId);
+    if (!run) {
+      return yield* new CrucibleHttpError({ message: "Run not found.", status: 404 });
+    }
+
+    const resolvedAt = new Date().toISOString();
+    resolveApproval({
+      id: approval.id,
+      status: approved ? "approved" : "denied",
+      addedToAllowlist: addToAllowlist,
+      resolvedAt,
+    });
+
+    if (approved && addToAllowlist) {
+      yield* Effect.tryPromise({
+        try: () => appendRepoAllowlist(run.directory, approval.command),
+        catch: (cause) =>
+          new CrucibleHttpError({
+            message: "Failed to update allowlist file.",
+            status: 500,
+            cause,
+          }),
+      });
+    }
+
+    // Push a synthetic event so the manager's next poll cycle sees the answer.
+    const markerLine = approved ? `APPROVED: ${approval.command}` : `DENIED: ${approval.command}`;
+    pushRunEvent(run, {
+      type: "crucible.approval.resolved",
+      summary: markerLine,
+      payload: {
+        approvalId: approval.id,
+        command: approval.command,
+        status: approved ? "approved" : "denied",
+        addedToAllowlist: addToAllowlist,
+      },
+    });
+
+    // Flip needsInput back to false if no other pending approvals remain.
+    const stillPending = getApprovalsForRun(runId).some((a) => a.status === "pending");
+    if (!stillPending) {
+      run.needsInput = false;
+    }
+
+    const updatedApproval: CrucibleApproval = {
+      ...approval,
+      status: approved ? "approved" : "denied",
+      addedToAllowlist: addToAllowlist,
+      resolvedAt,
+    };
+    return HttpServerResponse.jsonUnsafe({ ok: true, approval: updatedApproval }, { status: 200 });
   }).pipe(
     Effect.catchTag("AuthError", respondToAuthError),
     Effect.catchTag("CrucibleHttpError", handleCrucibleHttpError),
