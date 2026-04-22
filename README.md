@@ -1,4 +1,4 @@
-<img width="1679" height="928" alt="Screenshot 2026-04-19 at 4 39 10 PM" src="https://github.com/user-attachments/assets/bfde3b1e-621d-43b1-b850-3c05de65e9e1" /># Crucible
+# Crucible
 
 GitHub issues go in, real PRs come out.
 
